@@ -1,0 +1,29 @@
+{
+  "whitespace_crop": {
+    "folder": "G:/Shared drives/GSADUs Projects/Our Models/0 - CATALOG/Output",
+    "recursive": false,
+    "overwrite": true,
+    "buffer_left": "200",
+    "buffer_right": "200",
+    "buffer_top": "200",
+    "buffer_bottom": "200",
+    "white_tolerance": "10",
+    "alpha_threshold": "0"
+  },
+  "transparent_crop": {
+    "folder": "G:/Shared drives/GSADUs Projects/Our Models/0 - CATALOG/Output",
+    "_color_rgb": "255,255,255",
+    "color_tolerance": "0",
+    "use_border_connected": true,
+    "blur_kernel_size": "3",
+    "erode_iters": "0",
+    "dilate_iters": "1"
+  },
+  "filename_normalization": {
+    "folder": "G:/Shared drives/GSADUs Projects/Our Models/0 - CATALOG/Output",
+    "dry_run": true,
+    "recursive": true,
+    "add_folder": false,
+    "truncate": false
+  }
+}
