@@ -1,78 +1,73 @@
 # GSADUs Materials Installer
 
-A simple tool to install Revit material texture files from your family library to the Autodesk shared materials folder.
-
-## Purpose
-
-When using Revit families from RevitFamily.Biz or similar sources, the render material textures need to be placed in a specific location for them to display correctly:
-
-```
-C:\Program Files (x86)\Common Files\Autodesk Shared\Materials\Textures\1\Mats
-```
-
-This tool automates the process of:
-1. Searching your family library for `Materials` folders
-2. Copying all `.jpg` texture files to the Autodesk shared location
-3. Skipping any duplicate files that already exist
-
-## Quick Start
-
-### Option 1: Run the Batch File (Simplest)
-Double-click `MaterialsInstaller.bat` to launch the tool.
-
-### Option 2: Run the PowerShell Script
-Right-click `Install-Materials.ps1` and select "Run with PowerShell"
-
-### Option 3: Use the Standalone Executable
-1. Run `Build-Installer.ps1` to create the executable
-2. Find `MaterialsInstaller.exe` in the `dist` folder
-3. Copy the exe to any Windows machine and run it
-
-## Building the Executable
-
-To create a standalone `.exe` file that can run on any Windows machine:
-
-1. Open PowerShell as Administrator
-2. Navigate to this folder
-3. Run: `.\Build-Installer.ps1`
-
-The executable will be created in the `dist` folder.
-
-**Note:** The build script will automatically install the `PS2EXE` PowerShell module if needed.
+Aggregates Revit material textures into the shared GSADUs/GSDE materials folder so every drafter renders against the same library.
 
 ## Default Paths
 
-- **Source**: `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz`
-- **Destination**: `C:\Program Files (x86)\Common Files\Autodesk Shared\Materials\Textures\1\Mats`
+- **Source:** `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz` (the family library — change as needed)
+- **Destination:** `G:\Shared drives\GSDE Projects\CADD\Materials` (canonical shared folder)
 
-Both paths can be changed in the GUI before running the installation.
+The destination lives on the GSDE drive because GSDE handles post-contract Revit drafting (see `Vault\wiki\curated\key-locations.md` -> "GSDE Drive"). Both paths can be changed in the GUI.
 
-## Requirements
+## How It Works
 
-- Windows 10 or later
-- PowerShell 5.1 or later (included with Windows 10)
-- Administrator rights (to write to Program Files)
+One source, one destination, one **Install Materials** button. The source can be:
 
-## Troubleshooting
+- A folder of Revit families (e.g. `RevitFamily.Biz`).
+- A folder of downloaded bundles (e.g. `Downloads/`).
+- A single archive (`.zip` / `.rar` / `.7z`) picked via the **File...** button.
 
-### "Access Denied" errors
-- Run the tool as Administrator
-- The tool will prompt you to restart with elevated privileges if needed
+The tool walks the source tree and copies image files into the destination, deduplicating by filename. It does two things at every step:
 
-### "Source folder does not exist"
-- Make sure you have access to the Google Shared Drive
-- Verify the path is correct and the drive is mounted
+1. **Folder rule (legacy):** any image whose immediate parent folder is named `Materials` or `Textures` (case-insensitive) is pulled.
+2. **Archive rule (new):** any archive encountered is extracted to a temp folder. If the extracted contents contain **no** Revit family (`.rfa/.rvt/.rte/.rft`), every image inside is pulled — that archive is a textures bundle. If a family is present, the tool recurses with the folder rule above.
 
-### PS2EXE module installation fails
-- Run PowerShell as Administrator
-- Try: `Install-Module -Name ps2exe -Scope CurrentUser -Force`
-- Or just use the batch file instead of building an exe
+This handles common vendor patterns:
+
+| Pattern | Example | Outcome |
+|---------|---------|---------|
+| `family/Materials/*.jpg` | Generic library | Folder rule pulls images |
+| `.rfa` + `Materials.zip` (flat .jpgs) | BIMobject Bok chair | Archive rule pulls images |
+| `.rfa` + `<MaterialName>.zip` (often RAR-as-zip) | BIMobject Roller Max | Archive rule pulls (needs 7-Zip) |
+| `.rfa` + `.txt` only | BIMobject Alphabet Sofa | Clean no-op |
+
+### 7-Zip Auto-Install
+
+The tool extracts `.zip` natively. Some vendors ship RAR archives renamed `.zip` (e.g. `ETH_Oak_Natural.zip` is actually RAR), which needs 7-Zip. If the source contains any archives and 7-Zip isn't installed, the tool prompts to install it via:
+
+```
+winget install --id 7zip.7zip -e --silent
+```
+
+If you decline, only standard `.zip` archives will extract; non-zip archives are skipped with a warning.
+
+## Per-PC Revit Setup (one-time, separate from this tool)
+
+This tool only populates the shared folder. Each machine's Revit/Architextures still needs three pointers wired up — see `Vault\wiki\curated\architextures-material-sync.md`:
+
+1. **Revit:** File -> Options -> Rendering -> Additional render appearance paths -> add the shared destination path above.
+2. **Architextures:** Revit ribbon -> Add-Ins -> Architextures -> Relocate Textures Folder -> same path.
+3. **Google Drive:** right-click the shared `Materials` folder -> Offline access -> Available offline.
+
+Without all three, materials still render with pink "missing texture" placeholders even though the textures are present on the shared drive.
+
+## Quick Start
+
+- **Batch:** double-click `MaterialsInstaller.bat`.
+- **PowerShell:** right-click `Install-Materials.ps1` -> Run with PowerShell.
+- **Standalone exe:** run `Build-Installer.ps1`, then `dist\MaterialsInstaller.exe`.
+
+Admin rights are no longer required (destination is no longer under Program Files).
 
 ## Files
 
 | File | Description |
 |------|-------------|
 | `Install-Materials.ps1` | Main PowerShell script with GUI |
-| `MaterialsInstaller.bat` | Batch file launcher (simple option) |
-| `Build-Installer.ps1` | Script to create standalone .exe |
-| `dist/` | Output folder for built executable |
+| `MaterialsInstaller.bat` | Batch launcher |
+| `Build-Installer.ps1` | Builds standalone .exe via PS2EXE |
+| `dist/` | Build output (rebuild after script changes) |
+
+## Image Extensions Recognized
+
+`.jpg .jpeg .png .bmp .tif .tiff .dds .tga`

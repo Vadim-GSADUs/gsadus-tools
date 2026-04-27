@@ -1,11 +1,9 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Materials Installer - Copies material texture files from Revit family folders to Autodesk shared location.
-
-.DESCRIPTION
-    This tool searches a root folder for subfolders named "Materials" and copies all .jpg files
-    to the Autodesk shared materials textures folder, skipping duplicates.
+    Materials Installer - Aggregates Revit material textures into the shared
+    GSDE Projects materials folder, from either a Revit family library or
+    one-off downloaded family bundles (.zip / .rar / .7z).
 
 .NOTES
     Author: GSADUs
@@ -15,237 +13,438 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Default paths
-$script:DefaultSourcePath = "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz"
-$script:DefaultDestPath = "C:\Program Files (x86)\Common Files\Autodesk Shared\Materials\Textures\1\Mats"
+# Modern (Explorer-style) folder picker via IFileOpenDialog.
+# Supports pasting a full path into the "Folder name:" field instead of clicking through a tree.
+if (-not ('MaterialsInstaller.FolderPicker' -as [type])) {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.IO;
 
+namespace MaterialsInstaller {
+    [ComImport, ClassInterface(ClassInterfaceType.None), Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    public class FileOpenDialogRCW { }
+
+    [ComImport, Guid("42F85136-DB7E-439C-85F1-E4075D135FC8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IFileOpenDialog {
+        [PreserveSig] uint Show(IntPtr hwnd);
+        void SetFileTypes();
+        void SetFileTypeIndex();
+        void GetFileTypeIndex();
+        void Advise();
+        void Unadvise();
+        void SetOptions(uint fos);
+        void GetOptions();
+        void SetDefaultFolder(IShellItem psi);
+        void SetFolder(IShellItem psi);
+        void GetFolder();
+        void GetCurrentSelection();
+        void SetFileName();
+        void GetFileName();
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+        void SetOkButtonLabel();
+        void SetFileNameLabel();
+        void GetResult(out IShellItem ppsi);
+        void AddPlace();
+        void SetDefaultExtension();
+        void Close();
+        void SetClientGuid();
+        void ClearClientData();
+        void SetFilter();
+        void GetResults();
+        void GetSelectedItems();
+    }
+
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IShellItem {
+        void BindToHandler();
+        void GetParent();
+        void GetDisplayName(uint sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string name);
+        void GetAttributes();
+        void Compare();
+    }
+
+    public static class FolderPicker {
+        const uint FOS_PICKFOLDERS      = 0x20;
+        const uint FOS_FORCEFILESYSTEM  = 0x40;
+        const uint FOS_NOCHANGEDIR      = 0x8;
+        const uint SIGDN_FILESYSPATH    = 0x80058000;
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        static extern int SHCreateItemFromParsingName(string path, IntPtr pbc, [In] ref Guid riid, [Out, MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
+
+        public static string Pick(string initialPath, string title, IntPtr owner) {
+            var dlg = (IFileOpenDialog)new FileOpenDialogRCW();
+            try {
+                dlg.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR);
+                if (!string.IsNullOrEmpty(title)) dlg.SetTitle(title);
+                if (!string.IsNullOrEmpty(initialPath) && Directory.Exists(initialPath)) {
+                    Guid iid = typeof(IShellItem).GUID;
+                    IShellItem si;
+                    if (SHCreateItemFromParsingName(initialPath, IntPtr.Zero, ref iid, out si) == 0) {
+                        dlg.SetFolder(si);
+                    }
+                }
+                if (dlg.Show(owner) != 0) return null;
+                IShellItem result;
+                dlg.GetResult(out result);
+                string path;
+                result.GetDisplayName(SIGDN_FILESYSPATH, out path);
+                return path;
+            } finally {
+                Marshal.ReleaseComObject(dlg);
+            }
+        }
+    }
+}
+"@
+}
+
+function Select-Folder {
+    param([string]$InitialPath, [string]$Title, $Owner)
+    $hwnd = [IntPtr]::Zero
+    if ($Owner -and $Owner.Handle) { $hwnd = $Owner.Handle }
+    return [MaterialsInstaller.FolderPicker]::Pick($InitialPath, $Title, $hwnd)
+}
+
+# Default paths
+# Destination is the canonical shared materials folder used by everyone's Revit
+# (see Vault/wiki/curated/architextures-material-sync.md for the per-PC Revit setup).
+$script:DefaultSourcePath = "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz"
+$script:DefaultDestPath   = "G:\Shared drives\GSDE Projects\CADD\Materials"
+$script:DownloadsPath     = [Environment]::GetFolderPath('UserProfile') + '\Downloads'
+
+$script:ImageExtensions        = @('.jpg','.jpeg','.png','.bmp','.tif','.tiff','.dds','.tga')
+$script:RevitFamilyExtensions  = @('.rfa','.rvt','.rte','.rft')
+$script:ArchiveExtensions      = @('.zip','.rar','.7z')
+
+$script:SevenZipPath = $null
+$script:LogTextBox   = $null
+
+#--------------------------------------------------------------------
+# Logging
+#--------------------------------------------------------------------
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logEntry = "[$timestamp] [$Level] $Message"
-    
+    $entry = "[$timestamp] [$Level] $Message"
     if ($script:LogTextBox) {
-        $script:LogTextBox.AppendText("$logEntry`r`n")
+        $script:LogTextBox.AppendText("$entry`r`n")
         $script:LogTextBox.ScrollToCaret()
         [System.Windows.Forms.Application]::DoEvents()
     }
 }
 
-function Find-MaterialsFolders {
-    param([string]$RootPath)
-    
-    Write-Log "Searching for 'Materials' folders in: $RootPath"
-    
-    $materialsFolders = @()
-    
-    try {
-        $materialsFolders = Get-ChildItem -Path $RootPath -Directory -Recurse -Filter "Materials" -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq "Materials" }
-        
-        Write-Log "Found $($materialsFolders.Count) Materials folder(s)"
-    }
-    catch {
-        Write-Log "Error searching folders: $_" -Level "ERROR"
-    }
-    
-    return $materialsFolders
+#--------------------------------------------------------------------
+# 7-Zip helpers
+#--------------------------------------------------------------------
+function Find-7Zip {
+    $candidates = @(
+        "${env:ProgramFiles}\7-Zip\7z.exe",
+        "${env:ProgramFiles(x86)}\7-Zip\7z.exe"
+    )
+    foreach ($c in $candidates) { if (Test-Path -LiteralPath $c) { return $c } }
+    return $null
 }
 
-function Copy-MaterialFiles {
+function Install-7Zip {
+    Write-Log "7-Zip not detected. Installing via winget (this may trigger a UAC prompt)..."
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        Write-Log "winget not available. Install 7-Zip manually from https://www.7-zip.org/" -Level "ERROR"
+        return $null
+    }
+    try {
+        $proc = Start-Process -FilePath winget -ArgumentList @(
+            'install','--id','7zip.7zip','-e',
+            '--accept-source-agreements',
+            '--accept-package-agreements',
+            '--silent'
+        ) -Wait -PassThru -WindowStyle Hidden
+        if ($proc.ExitCode -eq 0) {
+            $found = Find-7Zip
+            if ($found) { Write-Log "7-Zip installed: $found" } else { Write-Log "winget reported success but 7z.exe not found." -Level "WARN" }
+            return $found
+        }
+        Write-Log "winget exited with code $($proc.ExitCode)" -Level "ERROR"
+        return $null
+    } catch {
+        Write-Log "winget install failed: $_" -Level "ERROR"
+        return $null
+    }
+}
+
+function Ensure-7Zip {
+    param([switch]$PromptIfMissing)
+    if (-not $script:SevenZipPath) { $script:SevenZipPath = Find-7Zip }
+    if ($script:SevenZipPath) { return $script:SevenZipPath }
+
+    if ($PromptIfMissing) {
+        $answer = [System.Windows.Forms.MessageBox]::Show(
+            "7-Zip is required to extract some bundle archives (e.g. RAR files renamed as .zip).`n`nInstall it now via winget?",
+            "Install 7-Zip?",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $script:SevenZipPath = Install-7Zip
+        } else {
+            Write-Log "Continuing without 7-Zip (only standard .zip archives will be extracted)." -Level "WARN"
+        }
+    }
+    return $script:SevenZipPath
+}
+
+function Expand-AnyArchive {
+    param([string]$ArchivePath, [string]$Destination)
+    $sevenZip = Ensure-7Zip
+    if ($sevenZip) {
+        # Build a single quoted command line — Start-Process -ArgumentList @() does not
+        # auto-quote individual array elements, so paths with spaces get tokenized.
+        $argLine = 'x -y "-o{0}" "{1}"' -f $Destination, $ArchivePath
+        $proc = Start-Process -FilePath $sevenZip -ArgumentList $argLine -Wait -PassThru -WindowStyle Hidden
+        if ($proc.ExitCode -eq 0) { return $true }
+        Write-Log "  7z exit code $($proc.ExitCode) on $(Split-Path -Leaf $ArchivePath)" -Level "WARN"
+        return $false
+    }
+    try {
+        Expand-Archive -LiteralPath $ArchivePath -DestinationPath $Destination -Force -ErrorAction Stop
+        return $true
+    } catch {
+        Write-Log "  Could not extract $(Split-Path -Leaf $ArchivePath): $_" -Level "WARN"
+        return $false
+    }
+}
+
+#--------------------------------------------------------------------
+# Source scan: walks folders + extracts archives, applying conservative rule
+#--------------------------------------------------------------------
+function Get-SourceImages {
+    param([string]$SourcePath, [string]$TempRoot, [int]$Depth = 0)
+    $images = New-Object System.Collections.Generic.List[string]
+    if ($Depth -gt 8) { Write-Log "  Depth limit reached at $SourcePath" -Level "WARN"; return $images }
+
+    if (Test-Path -LiteralPath $SourcePath -PathType Leaf) {
+        $ext = [System.IO.Path]::GetExtension($SourcePath).ToLower()
+        if ($script:ArchiveExtensions -contains $ext) {
+            return Invoke-ArchiveScan -ArchivePath $SourcePath -TempRoot $TempRoot -Depth $Depth
+        }
+        return $images
+    }
+
+    # Directory walk — conservative rule
+    Get-ChildItem -LiteralPath $SourcePath -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $ext = $_.Extension.ToLower()
+        if ($script:ImageExtensions -contains $ext) {
+            $parentName = Split-Path -Leaf $_.DirectoryName
+            if ($parentName -match '^(Materials|Textures)$') {
+                $images.Add($_.FullName) | Out-Null
+            }
+        } elseif ($script:ArchiveExtensions -contains $ext) {
+            $sub = Invoke-ArchiveScan -ArchivePath $_.FullName -TempRoot $TempRoot -Depth ($Depth + 1)
+            foreach ($p in $sub) { $images.Add($p) | Out-Null }
+        }
+    }
+    Get-ChildItem -LiteralPath $SourcePath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $sub = Get-SourceImages -SourcePath $_.FullName -TempRoot $TempRoot -Depth ($Depth + 1)
+        foreach ($p in $sub) { $images.Add($p) | Out-Null }
+    }
+    return $images
+}
+
+function Invoke-ArchiveScan {
+    param([string]$ArchivePath, [string]$TempRoot, [int]$Depth)
+    $images = New-Object System.Collections.Generic.List[string]
+    $name = Split-Path -Leaf $ArchivePath
+    $extractDir = Join-Path $TempRoot ([System.IO.Path]::GetRandomFileName())
+    New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
+
+    Write-Log "  Extracting: $name"
+    if (-not (Expand-AnyArchive -ArchivePath $ArchivePath -Destination $extractDir)) {
+        Write-Log "    Skipped (could not extract): $name" -Level "WARN"
+        return $images
+    }
+
+    $allFiles = Get-ChildItem -LiteralPath $extractDir -File -Recurse -ErrorAction SilentlyContinue
+    $hasFamily = $false
+    foreach ($f in $allFiles) {
+        if ($script:RevitFamilyExtensions -contains $f.Extension.ToLower()) { $hasFamily = $true; break }
+    }
+
+    if (-not $hasFamily) {
+        # Texture archive — pull all images regardless of folder name
+        foreach ($f in $allFiles) {
+            if ($script:ImageExtensions -contains $f.Extension.ToLower()) {
+                $images.Add($f.FullName) | Out-Null
+            }
+        }
+        Write-Log "    Texture archive: $($images.Count) image(s) found in $name"
+    } else {
+        # Mixed bundle — recurse with conservative rule
+        Write-Log "    Mixed bundle (contains Revit family): walking $name with conservative rule"
+        $sub = Get-SourceImages -SourcePath $extractDir -TempRoot $TempRoot -Depth ($Depth + 1)
+        foreach ($p in $sub) { $images.Add($p) | Out-Null }
+    }
+    return $images
+}
+
+#--------------------------------------------------------------------
+# Shared copy + dedupe
+#--------------------------------------------------------------------
+function Copy-ImageList {
     param(
-        [string]$SourceRoot,
+        [System.Collections.Generic.List[string]]$ImageList,
         [string]$Destination
     )
-    
-    $results = @{
-        Copied = 0
-        Skipped = 0
-        Errors = 0
-        TotalFound = 0
-    }
-    
-    # Create destination folder if it doesn't exist
-    if (-not (Test-Path -Path $Destination)) {
+    $results = @{ Copied = 0; Skipped = 0; Errors = 0; TotalFound = $ImageList.Count }
+
+    if (-not (Test-Path -LiteralPath $Destination)) {
         Write-Log "Creating destination folder: $Destination"
+        try { New-Item -Path $Destination -ItemType Directory -Force | Out-Null }
+        catch { Write-Log "Failed to create destination: $_" -Level "ERROR"; return $results }
+    }
+
+    $existing = @{}
+    Get-ChildItem -LiteralPath $Destination -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $existing[$_.Name.ToLower()] = $_.FullName
+    }
+    Write-Log "Found $($existing.Count) existing file(s) in destination"
+
+    foreach ($srcPath in $ImageList) {
+        $fileName = Split-Path -Leaf $srcPath
+        $key = $fileName.ToLower()
+        if ($existing.ContainsKey($key)) {
+            Write-Log "  Skipped (duplicate): $fileName" -Level "SKIP"
+            $results.Skipped++
+            continue
+        }
+        $destFile = Join-Path $Destination $fileName
         try {
-            New-Item -Path $Destination -ItemType Directory -Force | Out-Null
-            Write-Log "Destination folder created successfully"
-        }
-        catch {
-            Write-Log "Failed to create destination folder: $_" -Level "ERROR"
-            Write-Log "Try running as Administrator" -Level "ERROR"
-            return $results
-        }
-    }
-    
-    # Find all Materials folders
-    $materialsFolders = Find-MaterialsFolders -RootPath $SourceRoot
-    
-    if ($materialsFolders.Count -eq 0) {
-        Write-Log "No Materials folders found in the source path" -Level "WARN"
-        return $results
-    }
-    
-    # Get existing files in destination for duplicate detection
-    $existingFiles = @{}
-    Get-ChildItem -Path $Destination -Filter "*.jpg" -File -ErrorAction SilentlyContinue | ForEach-Object {
-        $existingFiles[$_.Name.ToLower()] = $_.FullName
-    }
-    Write-Log "Found $($existingFiles.Count) existing .jpg files in destination"
-    
-    # Process each Materials folder
-    foreach ($folder in $materialsFolders) {
-        Write-Log "Processing: $($folder.FullName)"
-        
-        $jpgFiles = Get-ChildItem -Path $folder.FullName -Filter "*.jpg" -File -ErrorAction SilentlyContinue
-        
-        foreach ($file in $jpgFiles) {
-            $results.TotalFound++
-            $destFilePath = Join-Path -Path $Destination -ChildPath $file.Name
-            $fileNameLower = $file.Name.ToLower()
-            
-            # Check if file already exists
-            if ($existingFiles.ContainsKey($fileNameLower)) {
-                Write-Log "  Skipped (duplicate): $($file.Name)" -Level "SKIP"
-                $results.Skipped++
-                continue
-            }
-            
-            # Copy the file
-            try {
-                Copy-Item -Path $file.FullName -Destination $destFilePath -Force
-                Write-Log "  Copied: $($file.Name)"
-                $results.Copied++
-                $existingFiles[$fileNameLower] = $destFilePath
-            }
-            catch {
-                Write-Log "  Error copying $($file.Name): $_" -Level "ERROR"
-                $results.Errors++
-            }
+            Copy-Item -LiteralPath $srcPath -Destination $destFile -Force
+            Write-Log "  Copied: $fileName"
+            $results.Copied++
+            $existing[$key] = $destFile
+        } catch {
+            Write-Log "  Error copying $fileName : $_" -Level "ERROR"
+            $results.Errors++
         }
     }
-    
     return $results
 }
 
+#--------------------------------------------------------------------
+# GUI
+#--------------------------------------------------------------------
 function Show-GUI {
-    # Create the main form
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "GSADUs Materials Installer"
-    $form.Size = New-Object System.Drawing.Size(700, 550)
+    $form.Size = New-Object System.Drawing.Size(720, 560)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    
-    # Source Path Label
+
+    # Source row
     $lblSource = New-Object System.Windows.Forms.Label
     $lblSource.Location = New-Object System.Drawing.Point(20, 20)
     $lblSource.Size = New-Object System.Drawing.Size(100, 23)
-    $lblSource.Text = "Source Folder:"
+    $lblSource.Text = "Source:"
     $form.Controls.Add($lblSource)
-    
-    # Source Path TextBox
+
     $txtSource = New-Object System.Windows.Forms.TextBox
     $txtSource.Location = New-Object System.Drawing.Point(120, 18)
-    $txtSource.Size = New-Object System.Drawing.Size(450, 23)
+    $txtSource.Size = New-Object System.Drawing.Size(385, 23)
     $txtSource.Text = $script:DefaultSourcePath
     $form.Controls.Add($txtSource)
-    
-    # Source Browse Button
-    $btnBrowseSource = New-Object System.Windows.Forms.Button
-    $btnBrowseSource.Location = New-Object System.Drawing.Point(580, 17)
-    $btnBrowseSource.Size = New-Object System.Drawing.Size(80, 25)
-    $btnBrowseSource.Text = "Browse..."
-    $btnBrowseSource.Add_Click({
-        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-        $folderBrowser.Description = "Select the root folder containing Revit families"
-        $folderBrowser.SelectedPath = $txtSource.Text
-        if ($folderBrowser.ShowDialog() -eq "OK") {
-            $txtSource.Text = $folderBrowser.SelectedPath
-        }
+
+    $btnBrowseSourceFolder = New-Object System.Windows.Forms.Button
+    $btnBrowseSourceFolder.Location = New-Object System.Drawing.Point(515, 17)
+    $btnBrowseSourceFolder.Size = New-Object System.Drawing.Size(80, 25)
+    $btnBrowseSourceFolder.Text = "Browse..."
+    $btnBrowseSourceFolder.Add_Click({
+        $picked = Select-Folder -InitialPath $txtSource.Text -Title "Select source folder" -Owner $form
+        if ($picked) { $txtSource.Text = $picked }
     })
-    $form.Controls.Add($btnBrowseSource)
-    
-    # Destination Path Label
+    $form.Controls.Add($btnBrowseSourceFolder)
+
+    # Destination row
     $lblDest = New-Object System.Windows.Forms.Label
     $lblDest.Location = New-Object System.Drawing.Point(20, 55)
     $lblDest.Size = New-Object System.Drawing.Size(100, 23)
     $lblDest.Text = "Destination:"
     $form.Controls.Add($lblDest)
-    
-    # Destination Path TextBox
+
     $txtDest = New-Object System.Windows.Forms.TextBox
     $txtDest.Location = New-Object System.Drawing.Point(120, 53)
-    $txtDest.Size = New-Object System.Drawing.Size(450, 23)
+    $txtDest.Size = New-Object System.Drawing.Size(470, 23)
     $txtDest.Text = $script:DefaultDestPath
     $form.Controls.Add($txtDest)
-    
-    # Destination Browse Button
+
     $btnBrowseDest = New-Object System.Windows.Forms.Button
-    $btnBrowseDest.Location = New-Object System.Drawing.Point(580, 52)
+    $btnBrowseDest.Location = New-Object System.Drawing.Point(600, 52)
     $btnBrowseDest.Size = New-Object System.Drawing.Size(80, 25)
     $btnBrowseDest.Text = "Browse..."
     $btnBrowseDest.Add_Click({
-        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-        $folderBrowser.Description = "Select the destination folder for materials"
-        $folderBrowser.SelectedPath = $txtDest.Text
-        if ($folderBrowser.ShowDialog() -eq "OK") {
-            $txtDest.Text = $folderBrowser.SelectedPath
-        }
+        $picked = Select-Folder -InitialPath $txtDest.Text -Title "Select destination folder" -Owner $form
+        if ($picked) { $txtDest.Text = $picked }
     })
     $form.Controls.Add($btnBrowseDest)
-    
-    # Install Button
+
+    # Source: also offer "File..." for a single archive
+    $btnBrowseSourceFile = New-Object System.Windows.Forms.Button
+    $btnBrowseSourceFile.Location = New-Object System.Drawing.Point(600, 17)
+    $btnBrowseSourceFile.Size = New-Object System.Drawing.Size(80, 25)
+    $btnBrowseSourceFile.Text = "File..."
+    $btnBrowseSourceFile.Add_Click({
+        $fd = New-Object System.Windows.Forms.OpenFileDialog
+        $fd.Title = "Pick a single archive (.zip / .rar / .7z)"
+        $fd.Filter = "Archives (*.zip;*.rar;*.7z)|*.zip;*.rar;*.7z|All files (*.*)|*.*"
+        $fd.InitialDirectory = $script:DownloadsPath
+        if ($fd.ShowDialog() -eq "OK") { $txtSource.Text = $fd.FileName }
+    })
+    $form.Controls.Add($btnBrowseSourceFile)
+
+    # Action buttons row
     $btnInstall = New-Object System.Windows.Forms.Button
-    $btnInstall.Location = New-Object System.Drawing.Point(20, 95)
-    $btnInstall.Size = New-Object System.Drawing.Size(150, 35)
+    $btnInstall.Location = New-Object System.Drawing.Point(20, 125)
+    $btnInstall.Size = New-Object System.Drawing.Size(180, 35)
     $btnInstall.Text = "Install Materials"
     $btnInstall.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
     $btnInstall.ForeColor = [System.Drawing.Color]::White
     $btnInstall.FlatStyle = "Flat"
     $form.Controls.Add($btnInstall)
-    
-    # Open Destination Button
+
     $btnOpenDest = New-Object System.Windows.Forms.Button
-    $btnOpenDest.Location = New-Object System.Drawing.Point(180, 95)
+    $btnOpenDest.Location = New-Object System.Drawing.Point(210, 125)
     $btnOpenDest.Size = New-Object System.Drawing.Size(150, 35)
     $btnOpenDest.Text = "Open Destination"
     $btnOpenDest.Add_Click({
-        if (Test-Path -Path $txtDest.Text) {
+        if (Test-Path -LiteralPath $txtDest.Text) {
             Start-Process explorer.exe -ArgumentList $txtDest.Text
         } else {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Destination folder does not exist yet.",
-                "Folder Not Found",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Information
-            )
+            [System.Windows.Forms.MessageBox]::Show("Destination does not exist yet.","Folder Not Found",
+                [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)
         }
     })
     $form.Controls.Add($btnOpenDest)
-    
-    # Clear Log Button
+
     $btnClear = New-Object System.Windows.Forms.Button
-    $btnClear.Location = New-Object System.Drawing.Point(340, 95)
-    $btnClear.Size = New-Object System.Drawing.Size(100, 35)
+    $btnClear.Location = New-Object System.Drawing.Point(370, 125)
+    $btnClear.Size = New-Object System.Drawing.Size(140, 35)
     $btnClear.Text = "Clear Log"
-    $btnClear.Add_Click({
-        $script:LogTextBox.Clear()
-    })
+    $btnClear.Add_Click({ $script:LogTextBox.Clear() })
     $form.Controls.Add($btnClear)
-    
-    # Log Label
+
+    # Log
     $lblLog = New-Object System.Windows.Forms.Label
-    $lblLog.Location = New-Object System.Drawing.Point(20, 145)
+    $lblLog.Location = New-Object System.Drawing.Point(20, 175)
     $lblLog.Size = New-Object System.Drawing.Size(100, 20)
     $lblLog.Text = "Activity Log:"
     $form.Controls.Add($lblLog)
-    
-    # Log TextBox
+
     $script:LogTextBox = New-Object System.Windows.Forms.TextBox
-    $script:LogTextBox.Location = New-Object System.Drawing.Point(20, 168)
-    $script:LogTextBox.Size = New-Object System.Drawing.Size(640, 290)
+    $script:LogTextBox.Location = New-Object System.Drawing.Point(20, 198)
+    $script:LogTextBox.Size = New-Object System.Drawing.Size(660, 290)
     $script:LogTextBox.Multiline = $true
     $script:LogTextBox.ScrollBars = "Vertical"
     $script:LogTextBox.ReadOnly = $true
@@ -253,109 +452,91 @@ function Show-GUI {
     $script:LogTextBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
     $script:LogTextBox.Font = New-Object System.Drawing.Font("Consolas", 9)
     $form.Controls.Add($script:LogTextBox)
-    
-    # Status Label
+
     $lblStatus = New-Object System.Windows.Forms.Label
-    $lblStatus.Location = New-Object System.Drawing.Point(20, 470)
-    $lblStatus.Size = New-Object System.Drawing.Size(640, 25)
-    $lblStatus.Text = "Ready. Click 'Install Materials' to begin."
+    $lblStatus.Location = New-Object System.Drawing.Point(20, 498)
+    $lblStatus.Size = New-Object System.Drawing.Size(660, 25)
+    $lblStatus.Text = "Ready. Source can be a folder (e.g. RevitFamily.Biz, Downloads) or a single archive."
     $form.Controls.Add($lblStatus)
-    
-    # Install Button Click Handler
+
+    # Single click handler
     $btnInstall.Add_Click({
-        $sourcePath = $txtSource.Text.Trim()
-        $destPath = $txtDest.Text.Trim()
-        
-        # Validate paths
-        if ([string]::IsNullOrEmpty($sourcePath)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Please specify a source folder.",
-                "Validation Error",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-            return
+        $src = $txtSource.Text.Trim()
+        $dst = $txtDest.Text.Trim()
+
+        if ([string]::IsNullOrEmpty($src)) {
+            [System.Windows.Forms.MessageBox]::Show("Please specify a source.","Validation Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Warning); return
         }
-        
-        if (-not (Test-Path -Path $sourcePath)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Source folder does not exist: $sourcePath",
-                "Validation Error",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-            return
+        if (-not (Test-Path -LiteralPath $src)) {
+            [System.Windows.Forms.MessageBox]::Show("Source does not exist:`n$src","Validation Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Warning); return
         }
-        
-        if ([string]::IsNullOrEmpty($destPath)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Please specify a destination folder.",
-                "Validation Error",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-            return
+        if ([string]::IsNullOrEmpty($dst)) {
+            [System.Windows.Forms.MessageBox]::Show("Please specify a destination.","Validation Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Warning); return
         }
-        
-        # Disable button during operation
+
         $btnInstall.Enabled = $false
         $btnInstall.Text = "Installing..."
-        $lblStatus.Text = "Installing materials... Please wait."
-        
+        $lblStatus.Text = "Install in progress..."
+
         Write-Log "=========================================="
-        Write-Log "Starting Materials Installation"
-        Write-Log "Source: $sourcePath"
-        Write-Log "Destination: $destPath"
+        Write-Log "Install starting"
+        Write-Log "Source: $src"
+        Write-Log "Destination: $dst"
         Write-Log "=========================================="
-        
-        # Perform the copy operation
-        $results = Copy-MaterialFiles -SourceRoot $sourcePath -Destination $destPath
-        
-        Write-Log "=========================================="
-        Write-Log "Installation Complete!"
-        Write-Log "  Files found: $($results.TotalFound)"
-        Write-Log "  Files copied: $($results.Copied)"
-        Write-Log "  Files skipped (duplicates): $($results.Skipped)"
-        Write-Log "  Errors: $($results.Errors)"
-        Write-Log "=========================================="
-        
-        $lblStatus.Text = "Complete! Copied: $($results.Copied) | Skipped: $($results.Skipped) | Errors: $($results.Errors)"
-        
-        # Re-enable button
-        $btnInstall.Enabled = $true
-        $btnInstall.Text = "Install Materials"
-        
-        # Show completion message
-        $message = "Installation complete!`n`n" +
-                   "Files found: $($results.TotalFound)`n" +
-                   "Files copied: $($results.Copied)`n" +
-                   "Files skipped (duplicates): $($results.Skipped)`n" +
-                   "Errors: $($results.Errors)"
-        
-        [System.Windows.Forms.MessageBox]::Show(
-            $message,
-            "Installation Complete",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        )
+
+        # Offer 7-Zip install only if archives are likely involved
+        $needs7z = $false
+        if (Test-Path -LiteralPath $src -PathType Leaf) {
+            $needs7z = $script:ArchiveExtensions -contains [System.IO.Path]::GetExtension($src).ToLower()
+        } else {
+            $needs7z = [bool](Get-ChildItem -LiteralPath $src -File -Recurse -ErrorAction SilentlyContinue |
+                              Where-Object { $script:ArchiveExtensions -contains $_.Extension.ToLower() } |
+                              Select-Object -First 1)
+        }
+        if ($needs7z) { Ensure-7Zip -PromptIfMissing | Out-Null }
+
+        $tempRoot = Join-Path $env:TEMP ("MaterialsInstaller_" + [System.IO.Path]::GetRandomFileName())
+        New-Item -Path $tempRoot -ItemType Directory -Force | Out-Null
+        Write-Log "Temp workspace: $tempRoot"
+
+        try {
+            $images = Get-SourceImages -SourcePath $src -TempRoot $tempRoot -Depth 0
+            Write-Log "Total images found: $($images.Count)"
+            $results = Copy-ImageList -ImageList $images -Destination $dst
+
+            Write-Log "=========================================="
+            Write-Log "Install complete!"
+            Write-Log "  Files found: $($results.TotalFound)"
+            Write-Log "  Files copied: $($results.Copied)"
+            Write-Log "  Files skipped (duplicates): $($results.Skipped)"
+            Write-Log "  Errors: $($results.Errors)"
+            Write-Log "=========================================="
+            $lblStatus.Text = "Complete. Copied: $($results.Copied) | Skipped: $($results.Skipped) | Errors: $($results.Errors)"
+            $msg = "Install complete!`n`nFound: $($results.TotalFound)`nCopied: $($results.Copied)`nSkipped: $($results.Skipped)`nErrors: $($results.Errors)"
+            [System.Windows.Forms.MessageBox]::Show($msg,"Install Complete",
+                [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)
+        } finally {
+            try {
+                Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Log "Cleaned up temp workspace."
+            } catch {
+                Write-Log "Could not fully clean temp workspace: $_" -Level "WARN"
+            }
+            $btnInstall.Text = "Install Materials"
+            $btnInstall.Enabled = $true
+        }
     })
-    
-    # Show the form
+
     Write-Log "GSADUs Materials Installer started"
     Write-Log "Default source: $script:DefaultSourcePath"
     Write-Log "Default destination: $script:DefaultDestPath"
-    
+    $sevenZipAtStart = Find-7Zip
+    if ($sevenZipAtStart) { Write-Log "7-Zip detected: $sevenZipAtStart" } else { Write-Log "7-Zip not detected (will offer to install on first run that needs it)." }
+
     [void]$form.ShowDialog()
 }
 
-# Auto-elevate to administrator (needed for Program Files) - no prompt, just elevate
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if (-not $isAdmin) {
-    # Silently restart as Administrator
-    Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    exit
-}
-
-# Run the GUI
 Show-GUI

@@ -71,12 +71,11 @@ try {
     Invoke-PS2EXE -InputFile $sourceScript `
                   -OutputFile $outputExe `
                   -Title "GSADUs Materials Installer" `
-                  -Description "Installs Revit material textures to Autodesk shared folder" `
+                  -Description "Aggregates Revit family material textures into the shared GSADUs materials folder" `
                   -Company "GSADUs" `
                   -Product "Materials Installer" `
                   -Version "1.0.0.0" `
                   -Copyright "(c) 2026 GSADUs" `
-                  -RequireAdmin `
                   -NoConsole `
                   -NoError
     
