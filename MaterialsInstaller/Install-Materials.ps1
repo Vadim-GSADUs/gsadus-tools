@@ -107,12 +107,29 @@ function Select-Folder {
     return [MaterialsInstaller.FolderPicker]::Pick($InitialPath, $Title, $hwnd)
 }
 
+function Get-DefaultDownloadsPath {
+    $fallbackPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+    $downloadsFolderId = '{374DE290-123F-4565-9164-39C4925E467B}'
+
+    try {
+        $shellFolders = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop
+        $configuredPath = $shellFolders.$downloadsFolderId
+        if (-not [string]::IsNullOrWhiteSpace($configuredPath)) {
+            return [Environment]::ExpandEnvironmentVariables($configuredPath)
+        }
+    } catch {
+        Write-Verbose "Could not resolve Downloads folder from shell settings: $_"
+    }
+
+    return $fallbackPath
+}
+
 # Default paths
 # Destination is the canonical shared materials folder used by everyone's Revit
 # (see Vault/wiki/curated/architextures-material-sync.md for the per-PC Revit setup).
-$script:DefaultSourcePath = "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz"
+$script:DownloadsPath     = Get-DefaultDownloadsPath
+$script:DefaultSourcePath = $script:DownloadsPath
 $script:DefaultDestPath   = "G:\Shared drives\GSDE Projects\CADD\Materials"
-$script:DownloadsPath     = [Environment]::GetFolderPath('UserProfile') + '\Downloads'
 
 $script:ImageExtensions        = @('.jpg','.jpeg','.png','.bmp','.tif','.tiff','.dds','.tga')
 $script:RevitFamilyExtensions  = @('.rfa','.rvt','.rte','.rft')

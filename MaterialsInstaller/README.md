@@ -4,7 +4,7 @@ Aggregates Revit material textures into the shared GSADUs/GSDE materials folder 
 
 ## Default Paths
 
-- **Source:** `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz` (the family library — change as needed)
+- **Source:** the current user's `Downloads` folder (resolved dynamically from Windows shell settings, with `C:\Users\<User>\Downloads` as fallback)
 - **Destination:** `G:\Shared drives\GSDE Projects\CADD\Materials` (canonical shared folder)
 
 The destination lives on the GSDE drive because GSDE handles post-contract Revit drafting (see `Vault\wiki\curated\key-locations.md` -> "GSDE Drive"). Both paths can be changed in the GUI.
