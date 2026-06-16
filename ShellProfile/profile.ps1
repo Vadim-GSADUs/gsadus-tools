@@ -44,6 +44,23 @@ function Get-WipRepos {
     $repos
 }
 
+# -- cross-machine sync report (collected per run, shown loudly at the end) ----
+# A single missed WARN line in a wall of per-repo output could let a repo's work
+# silently stay behind. Every repo that can't be saved/synced cleanly is recorded
+# here and reported as a summary so it can't be overlooked before switching PCs.
+$global:GSADUsWipReport = @()
+function Reset-WipReport   { $global:GSADUsWipReport = @() }
+function Add-WipAttention  { param([string]$Msg) $global:GSADUsWipReport += $Msg }
+function Show-WipReport {
+    param([string]$Verb = "saved")
+    if ($global:GSADUsWipReport.Count -gt 0) {
+        Write-Host ""
+        Write-Host ("  !! {0} repo(s) NOT {1} — need attention before switching machines:" -f $global:GSADUsWipReport.Count, $Verb) -ForegroundColor Red
+        foreach ($m in $global:GSADUsWipReport) { Write-Host "       - $m" -ForegroundColor Red }
+        Write-Host "    Run 'unwip-all' here, resolve, then re-run." -ForegroundColor DarkGray
+    }
+}
+
 # -- core per-repo helpers (operate on the current directory) ------------------
 
 function Save-RepoWip {
@@ -60,21 +77,50 @@ function Save-RepoWip {
     if (git log "origin/$branch..HEAD" --oneline 2>$null) {
         git push -q origin $branch 2>$null
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "  WARN $Label — '$branch' is behind remote; run unwip-all first" -ForegroundColor Red
+            Add-WipAttention "$Label — local commits on '$branch' diverge from remote; run unwip-all and reconcile"
+            Write-Host "  WARN $Label — '$branch' diverged from remote; left unchanged (see summary)" -ForegroundColor Red
             return
         }
         $pushedReal = $true
     }
 
-    # 1b. Never snapshot on a STALE base. If the real branch is behind remote
-    #     (someone else pushed real commits we haven't pulled), a wip snapshot
-    #     taken here records a diff against an old parent — which then conflicts
-    #     when another machine adopts it onto current 'main'. Refuse and tell the
-    #     user to unwip first so 'main' is current before we snapshot.
+    # 1b. If the real branch is behind remote, AUTO-RESOLVE before snapshotting so
+    #     we never snapshot on a STALE base (the cause of phantom unwip conflicts).
+    #     "Behind" = real commits landed on origin we haven't pulled. We do the
+    #     *pull half* of unwip — fast-forward 'main' and replay our uncommitted
+    #     edits on top — but deliberately NOT the wip-adoption half (that belongs
+    #     to unwip on arrival, not to a save). Clean replay -> continue and snapshot
+    #     a fresh, current base. If our edits genuinely clash with the incoming
+    #     commits, roll the repo back to its EXACT original state and flag it —
+    #     never hand the user a half-merged tree at save time.
     $behindRaw = git rev-list "HEAD..origin/$branch" --count 2>$null
     if ($behindRaw -and [int]$behindRaw -gt 0) {
-        Write-Host "  WARN $Label — '$branch' is $behindRaw behind remote; run unwip-all first (refusing to snapshot on a stale base)" -ForegroundColor Red
-        return
+        $orig  = git rev-parse HEAD 2>$null
+        $dirty = [bool](git status --porcelain)
+        if ($dirty) { git stash push -u -q -m "wip-autoresolve" 2>$null }
+
+        git merge --ff-only -q "origin/$branch" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            if ($dirty) { git stash pop -q 2>$null }   # ff impossible (local commits) — undo stash, bail
+            Add-WipAttention "$Label — '$branch' diverged from remote; run unwip-all and reconcile"
+            Write-Host "  WARN $Label — '$branch' diverged; left unchanged (see summary)" -ForegroundColor Red
+            return
+        }
+
+        if ($dirty) {
+            git stash pop 2>&1 | Out-Null              # replay our edits onto current 'main'
+            if ($LASTEXITCODE -ne 0) {
+                # Genuine overlap between our edits and the incoming commits. Restore
+                # the repo to exactly where it started: reset 'main' back, then reapply
+                # the still-present stash onto its own base (always clean), and flag it.
+                git reset -q --hard $orig 2>$null
+                git stash pop -q 2>$null
+                Add-WipAttention "$Label — your edits clash with incoming commits; run unwip-all here and resolve"
+                Write-Host "  WARN $Label — could not auto-resolve; left unchanged (see summary)" -ForegroundColor Red
+                return
+            }
+        }
+        Write-Host "  sync $Label (caught up $behindRaw commit(s) on '$branch')" -ForegroundColor DarkGray
     }
 
     # 2. Snapshot the working tree (tracked + untracked) onto wip/<me>.
@@ -139,6 +185,7 @@ function Restore-RepoWip {
     if ($behind -gt 0) {
         git merge --ff-only -q "origin/$branch" 2>$null
         if ($LASTEXITCODE -ne 0) {
+            Add-WipAttention "$Label — '$branch' diverged from remote; resolve manually"
             Write-Host "  WARN $Label — '$branch' diverged from remote; resolve manually" -ForegroundColor Red
             if ($stashed) { git stash pop -q 2>$null }
             return
@@ -157,6 +204,7 @@ function Restore-RepoWip {
             # safe in the autostash below — never touched by this reset.
             git cherry-pick --abort 2>$null
             git reset -q --hard HEAD 2>$null
+            Add-WipAttention "$Label — incoming wip conflicts with '$branch'; resolve manually"
             Write-Host "  WARN $Label — incoming wip conflicts with '$branch'; left unchanged" -ForegroundColor Red
             if ($stashed) { Write-Host "       your local changes are saved in 'git stash'." -ForegroundColor DarkGray }
             return
@@ -177,6 +225,7 @@ function Restore-RepoWip {
         } else {
             git stash pop 2>&1 | Out-Null   # reapply local edits on top of updated branch
             if ($LASTEXITCODE -ne 0) {
+                Add-WipAttention "$Label — local edits conflict after update; kept in 'git stash'"
                 Write-Host "  WARN $Label — local edits conflict after update; kept in 'git stash'" -ForegroundColor Red
             } else {
                 Write-Host "  pull $Label (commits + local edits restored)" -ForegroundColor Cyan
@@ -191,12 +240,13 @@ function Restore-RepoWip {
 
 # -- single-repo commands (run from inside a repo) ----------------------------
 
-function wip   { Save-RepoWip    -Label (Split-Path -Leaf (Get-Location)) }
-function unwip { Restore-RepoWip -Label (Split-Path -Leaf (Get-Location)) }
+function wip   { Reset-WipReport; Save-RepoWip    -Label (Split-Path -Leaf (Get-Location)); Show-WipReport }
+function unwip { Reset-WipReport; Restore-RepoWip -Label (Split-Path -Leaf (Get-Location)); Show-WipReport -Verb "synced" }
 
 # -- all-repo commands (run from anywhere) ------------------------------------
 
 function wip-all {
+    Reset-WipReport
     foreach ($repo in Get-WipRepos) {
         Push-Location $repo
         $rel = $repo.Replace($GSADUsRoot, "").TrimStart("\")
@@ -204,9 +254,11 @@ function wip-all {
         Save-RepoWip -Label $rel
         Pop-Location
     }
+    Show-WipReport
 }
 
 function unwip-all {
+    Reset-WipReport
     # Sync the workspace root first so setup.ps1 is current before cloning missing repos.
     Push-Location $GSADUsRoot
     Restore-RepoWip -Label "."
@@ -223,6 +275,7 @@ function unwip-all {
         Restore-RepoWip -Label $rel
         Pop-Location
     }
+    Show-WipReport -Verb "synced"
 }
 
 function end-day {
