@@ -66,6 +66,17 @@ function Save-RepoWip {
         $pushedReal = $true
     }
 
+    # 1b. Never snapshot on a STALE base. If the real branch is behind remote
+    #     (someone else pushed real commits we haven't pulled), a wip snapshot
+    #     taken here records a diff against an old parent — which then conflicts
+    #     when another machine adopts it onto current 'main'. Refuse and tell the
+    #     user to unwip first so 'main' is current before we snapshot.
+    $behindRaw = git rev-list "HEAD..origin/$branch" --count 2>$null
+    if ($behindRaw -and [int]$behindRaw -gt 0) {
+        Write-Host "  WARN $Label — '$branch' is $behindRaw behind remote; run unwip-all first (refusing to snapshot on a stale base)" -ForegroundColor Red
+        return
+    }
+
     # 2. Snapshot the working tree (tracked + untracked) onto wip/<me>.
     git add -A
     if (-not (git status --porcelain)) {
@@ -138,7 +149,14 @@ function Restore-RepoWip {
     if ($incoming) {
         git cherry-pick --no-commit $other 2>$null
         if ($LASTEXITCODE -ne 0) {
+            # A conflicted '--no-commit' cherry-pick leaves an unmerged index and
+            # conflict markers in the worktree; 'cherry-pick --abort' clears the
+            # sequencer flag but NOT the half-merged tree. Hard-reset to the
+            # (already fast-forwarded) branch tip so 'left unchanged' is literally
+            # true and markers can't pile up across runs. The user's own work is
+            # safe in the autostash below — never touched by this reset.
             git cherry-pick --abort 2>$null
+            git reset -q --hard HEAD 2>$null
             Write-Host "  WARN $Label — incoming wip conflicts with '$branch'; left unchanged" -ForegroundColor Red
             if ($stashed) { Write-Host "       your local changes are saved in 'git stash'." -ForegroundColor DarkGray }
             return
