@@ -123,6 +123,21 @@ function Save-RepoWip {
         Write-Host "  sync $Label (caught up $behindRaw commit(s) on '$branch')" -ForegroundColor DarkGray
     }
 
+    # Secret guard: `git add -A` stages only non-ignored files, so this lists
+    # exactly what would be committed. If a known secret file is no longer
+    # ignored (e.g. .gitignore got weakened/synced away), refuse to wip this
+    # repo instead of snapshotting the secret to the remote wip/<host> branch.
+    $leak = git ls-files --others --exclude-standard 2>$null | Where-Object {
+        ($_ -match '(^|/)\.env($|\.)' -and $_ -notmatch '\.env\.example$') -or
+        ($_ -match 'serviceaccount.*\.json$') -or
+        ($_ -match '(^|/)gcs-.*\.json$')
+    }
+    if ($leak) {
+        Add-WipAttention "$Label — NOT wipped: secret file not ignored ($($leak -join ', ')); fix .gitignore"
+        Write-Host "  BLOCK $Label — secret file would be committed; left unchanged (see summary)" -ForegroundColor Red
+        return
+    }
+
     # 2. Snapshot the working tree (tracked + untracked) onto wip/<me>.
     git add -A
     if (-not (git status --porcelain)) {
