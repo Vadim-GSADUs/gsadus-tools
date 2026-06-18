@@ -15,6 +15,9 @@
 #     belonging to a DIFFERENT machine as uncommitted changes.
 #   * The autostash is only discarded after we confirm its content is already
 #     safe on this machine's own wip/<host> ref; otherwise it is kept.
+#   * A kept autostash self-prunes on the next unwip: once its content is
+#     reproducible from the working tree or committed history it is dropped, so
+#     redundant stashes can never pile up across runs (see Remove-RedundantWipStash).
 
 $GSADUsRoot     = "C:\GSADUs"
 $GSADUsProfile  = "$GSADUsRoot\Tools\ShellProfile\profile.ps1"   # canonical path of this file
@@ -155,6 +158,46 @@ function Save-RepoWip {
     else { Write-Host "  ERROR $Label push failed (work is safe locally)" -ForegroundColor Red }
 }
 
+function Test-WipStashRedundant {
+    # A 'unwip-autostash' entry is redundant when its ENTIRE content is already
+    # reproducible from the current repo — tracked changes identical to the
+    # working tree AND every captured untracked file present with identical
+    # content. In that case the stash is a pure duplicate (the work survives in
+    # the tree, or is committed) and can be dropped losslessly. The check is
+    # deliberately conservative: any doubt -> not redundant -> the stash is kept.
+    param([string]$Ref)
+    if (git diff $Ref -- 2>$null) { return $false }   # tracked content differs
+    # `git stash -u` records untracked files under the stash's 3rd parent.
+    if (git rev-parse --verify --quiet "$Ref^3" 2>$null) {
+        foreach ($f in (git ls-tree -r --name-only "$Ref^3" 2>$null)) {
+            if (-not (Test-Path -LiteralPath $f)) { return $false }
+            if ((git rev-parse "${Ref}^3:$f" 2>$null) -ne (git hash-object -- $f 2>$null)) { return $false }
+        }
+    }
+    return $true
+}
+
+function Remove-RedundantWipStash {
+    # Prune any pre-existing 'unwip-autostash' entries that are now redundant, so
+    # they can't snowball across runs (3+ byte-identical stashes was the original
+    # symptom). Re-enumerate after each drop because indices shift; bail as soon
+    # as a pass finds nothing left to remove. Only ever drops stashes proven safe
+    # by Test-WipStashRedundant — genuine unsynced work is always left untouched.
+    while ($true) {
+        $entries = @(git stash list 2>$null)
+        $dropped = $false
+        for ($i = 0; $i -lt $entries.Count; $i++) {
+            if ($entries[$i] -notmatch 'unwip-autostash') { continue }
+            if (Test-WipStashRedundant "stash@{$i}") {
+                git stash drop -q "stash@{$i}" 2>$null
+                $dropped = $true
+                break
+            }
+        }
+        if (-not $dropped) { break }
+    }
+}
+
 function Restore-RepoWip {
     param([string]$Label = ".")
     $me     = Get-WipHost
@@ -162,6 +205,11 @@ function Restore-RepoWip {
     if (-not $branch) { Write-Host "  skip $Label (not a git repo)" -ForegroundColor DarkGray; return }
 
     git fetch -q --prune origin 2>$null
+
+    # Self-clean: discard leftover autostashes whose content is already safe in
+    # the tree/history before doing anything else, so a kept stash never outlives
+    # its usefulness and pile up over successive unwip runs.
+    Remove-RedundantWipStash
 
     # Newest wip branch belonging to ANOTHER machine.
     $other = git for-each-ref --sort=-committerdate --format="%(refname:short)" "refs/remotes/origin/wip/*" 2>$null |
