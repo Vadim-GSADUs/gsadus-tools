@@ -302,6 +302,161 @@ function end-day {
     rundll32.exe user32.dll,LockWorkStation
 }
 
+# -- cross-PC secret (.env) sync ----------------------------------------------
+# .env files are gitignored (web-catalog has an external collaborator), so they
+# can't ride git like everything else. Instead they hop directly between PCs over
+# the existing Tailscale/OpenSSH link (see Vault wiki: remote-access, wip-sync).
+#
+#   push-env   copy THIS machine's .env files to the other PC
+#   pull-env   copy the other PC's .env files to THIS machine
+#   -Force     override the rollback guard (see below)
+#
+# Run these at the machine's OWN console. Don't drive them through a nested SSH
+# session (e.g. ssh OTHER-PC "... push-env") — the double remote-pwsh hop hangs.
+# To sync from afar, just run the opposite verb locally: to fetch the other PC's
+# secrets, run pull-env here; to send yours, run push-env here.
+#
+# Rollback guard: a file is only overwritten when the source copy DIFFERS AND is
+# NEWER than the destination. If the destination is newer (e.g. you just rolled a
+# key there), the transfer is BLOCKED so a stale secret can't clobber a fresh one.
+# -Force overrides it, but first stashes the newer destination copy to
+# %TEMP%\gsadus-env-backups (kept out of any repo so it can't trip the wip leak
+# guard), so nothing is ever truly lost. scp -p preserves mtimes so the
+# newer/older comparison stays honest across machines.
+
+# SSH target of each machine, keyed by COMPUTERNAME (Tailscale MagicDNS names).
+$GSADUsSshTargets = @{
+    'VG-HOME'      = 'User@vg-home'
+    'GSADUS-VADIM' = 'Vadim@gsadus-vadim'
+}
+
+# .env files that live outside git, relative to $GSADUsRoot.
+$GSADUsEnvFiles = @(
+    'WebCatalog\pipeline\.env'
+    'PostProcess\PNGTools\.env'
+    'PostProcess\DigitalDarkroom\.env'
+)
+
+function Get-GSPeer {
+    $me = $env:COMPUTERNAME.ToUpper()
+    if (-not $GSADUsSshTargets.ContainsKey($me)) {
+        Write-Host "  ERROR unknown machine '$me' — add it to `$GSADUsSshTargets in profile.ps1" -ForegroundColor Red
+        return $null
+    }
+    $GSADUsSshTargets.Keys | Where-Object { $_ -ne $me } |
+        ForEach-Object { $GSADUsSshTargets[$_] } | Select-Object -First 1
+}
+
+function Invoke-GSRemote {
+    # Run a pwsh snippet on the peer. -EncodedCommand sidesteps every SSH/pwsh
+    # quoting pitfall for the small scripts we send.
+    #   -n            : never read local stdin (good hygiene; harmless locally)
+    #   BatchMode     : fail fast instead of blocking on any auth/host-key prompt
+    #   ConnectTimeout: don't hang if the peer is offline
+    # These run push/pull-env LOCALLY (one ssh hop to the peer). Driving the whole
+    # command through a nested SSH session is unsupported — see header note.
+    param([string]$Peer, [string]$Script)
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
+    ssh -n -o BatchMode=yes -o ConnectTimeout=10 $Peer "pwsh -NoProfile -EncodedCommand $enc"
+}
+
+function Format-EnvTime {
+    param([long]$Ticks)
+    if ($Ticks -le 0) { return '(none)' }
+    [datetime]::new($Ticks, [DateTimeKind]::Utc).ToLocalTime().ToString('MM-dd HH:mm')
+}
+
+function Sync-OneEnv {
+    param(
+        [Parameter(Mandatory)][string]$Rel,
+        [Parameter(Mandatory)][ValidateSet('push','pull')][string]$Direction,
+        [switch]$Force
+    )
+    $peer = Get-GSPeer
+    if (-not $peer) { return 'error' }
+
+    $local     = Join-Path $GSADUsRoot $Rel
+    $remoteFs  = "C:/GSADUs/$($Rel -replace '\\','/')"
+    $remoteScp = "${peer}:$remoteFs"
+
+    # local meta
+    if (Test-Path $local) {
+        $lHash  = (Get-FileHash $local -Algorithm SHA256).Hash
+        $lTicks = (Get-Item $local).LastWriteTimeUtc.Ticks
+    } else { $lHash = $null; $lTicks = 0 }
+
+    # remote meta (hash + UTC ticks, or MISSING) in one round trip
+    $metaScript = @"
+`$p = '$remoteFs'
+if (Test-Path `$p) { (Get-FileHash `$p -Algorithm SHA256).Hash + '|' + (Get-Item `$p).LastWriteTimeUtc.Ticks } else { 'MISSING' }
+"@
+    $raw = (Invoke-GSRemote $peer $metaScript | Out-String).Trim()
+    if (-not $raw) {
+        Write-Host "  ERROR $Rel — no response from $peer (online? SSH up?)" -ForegroundColor Red
+        return 'error'
+    }
+    if ($raw -eq 'MISSING') { $rHash = $null; $rTicks = 0 }
+    else { $parts = $raw -split '\|', 2; $rHash = $parts[0]; $rTicks = [long]$parts[1] }
+
+    if ($Direction -eq 'push') { $srcHash=$lHash; $srcTicks=$lTicks; $dstTicks=$rTicks; $dstLabel='remote'; $arrow='->' }
+    else                       { $srcHash=$rHash; $srcTicks=$rTicks; $dstTicks=$lTicks; $dstLabel='local';  $arrow='<-' }
+
+    if (-not $srcHash) {
+        Write-Host "  skip  $Rel (no source file to $Direction)" -ForegroundColor DarkGray
+        return 'skip'
+    }
+    if ($lHash -and $rHash -and $lHash -eq $rHash) {
+        Write-Host "  ok    $Rel (in sync)" -ForegroundColor DarkGray
+        return 'insync'
+    }
+
+    # content differs (or dest missing) — block if we'd overwrite a NEWER dest
+    if ($dstTicks -gt $srcTicks -and -not $Force) {
+        Write-Host ("  BLOCK {0} — {1} is NEWER (src {2} < dst {3}); refusing to roll back. Use -Force to override." `
+            -f $Rel, $dstLabel, (Format-EnvTime $srcTicks), (Format-EnvTime $dstTicks)) -ForegroundColor Red
+        return 'blocked'
+    }
+
+    # overwriting a newer dest under -Force: stash the newer copy first
+    if ($Force -and $dstTicks -gt $srcTicks) {
+        $bakDir = Join-Path $env:TEMP 'gsadus-env-backups'
+        New-Item -ItemType Directory -Force $bakDir | Out-Null
+        $bak = Join-Path $bakDir ('{0}.{1}.bak' -f ($Rel -replace '[\\/]','_'), (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        if ($Direction -eq 'push') { scp -p -q -o BatchMode=yes -o ConnectTimeout=10 "$remoteScp" "$bak" } else { Copy-Item $local $bak -Force }
+        Write-Host "       stashed newer $dstLabel copy -> $bak" -ForegroundColor DarkYellow
+    }
+
+    if ($Direction -eq 'push') { scp -p -q -o BatchMode=yes -o ConnectTimeout=10 "$local" "$remoteScp" } else { scp -p -q -o BatchMode=yes -o ConnectTimeout=10 "$remoteScp" "$local" }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  sync  $Rel ($dstLabel updated, $arrow $peer)" -ForegroundColor Cyan
+        return 'synced'
+    }
+    Write-Host "  ERROR $Rel — scp failed (exit $LASTEXITCODE)" -ForegroundColor Red
+    return 'error'
+}
+
+function Invoke-EnvSync {
+    param([ValidateSet('push','pull')][string]$Direction, [switch]$Force)
+    $peer = Get-GSPeer
+    if (-not $peer) { return }
+    Write-Host ("{0}ing .env files {1} {2}" -f $Direction, ($Direction -eq 'push' ? 'to' : 'from'), $peer) -ForegroundColor Cyan
+    $blocked = 0; $synced = 0
+    foreach ($f in $GSADUsEnvFiles) {
+        switch (Sync-OneEnv -Rel $f -Direction $Direction -Force:$Force) {
+            'blocked' { $blocked++ }
+            'synced'  { $synced++ }
+        }
+    }
+    if ($blocked -gt 0) {
+        Write-Host ("  !! {0} file(s) BLOCKED to avoid a rollback. Re-run '{1}-env -Force' only if you're sure." -f $blocked, $Direction) -ForegroundColor Red
+    } elseif ($synced -eq 0) {
+        Write-Host "  nothing to do — all in sync." -ForegroundColor DarkGray
+    }
+}
+
+function push-env { param([switch]$Force) Invoke-EnvSync -Direction push -Force:$Force }
+function pull-env { param([switch]$Force) Invoke-EnvSync -Direction pull -Force:$Force }
+
 # -- startup task helpers -----------------------------------------------------
 function Register-StartupUnwip {
     # The scheduled task dot-sources the tracked profile directly (not $PROFILE),
