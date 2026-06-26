@@ -21,6 +21,7 @@
 
 $GSADUsRoot     = "C:\GSADUs"
 $GSADUsProfile  = "$GSADUsRoot\Tools\ShellProfile\profile.ps1"   # canonical path of this file
+$GSADUsWipConflictReport = "$GSADUsRoot\.wip-conflict.md"
 
 function Get-WipHost {
     # Stable, ref-safe machine id: lowercase computer name, non-alphanumerics -> '-'
@@ -52,8 +53,103 @@ function Get-WipRepos {
 # silently stay behind. Every repo that can't be saved/synced cleanly is recorded
 # here and reported as a summary so it can't be overlooked before switching PCs.
 $global:GSADUsWipReport = @()
-function Reset-WipReport   { $global:GSADUsWipReport = @() }
+function Reset-WipReport   {
+    $global:GSADUsWipReport = @()
+    $global:GSADUsWipConflictReportStarted = $false
+}
 function Add-WipAttention  { param([string]$Msg) $global:GSADUsWipReport += $Msg }
+function Write-WipConflictReport {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$Reason,
+        [string]$IncomingRef,
+        [string]$IncomingSha,
+        [string]$LastApplied,
+        [string[]]$ConflictedFiles = @(),
+        [string[]]$IncomingFiles = @()
+    )
+
+    $repoPath = (Get-Location).Path
+    $branch = git rev-parse --abbrev-ref HEAD 2>$null
+    $head = git rev-parse HEAD 2>$null
+    $status = @(git status --short 2>$null)
+    $when = Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"
+
+    $lines = @()
+    $firstReportThisRun = -not $global:GSADUsWipConflictReportStarted
+    if ($firstReportThisRun) {
+        $lines += "# GSADUs WIP Conflict Report"
+        $lines += ""
+        $lines += "Generated: $when"
+        $lines += ""
+        $lines += 'If this file exists, the last `unwip`/`unwip-all` run found a conflict that needs an agent to reconcile.'
+        $lines += 'Do not ask the human to manage this. Resolve the repo state, update `wip.lastApplied` when the incoming wip has been accounted for, then rerun `unwip-all`.'
+        $lines += ""
+        $global:GSADUsWipConflictReportStarted = $true
+    }
+
+    $lines += "## $Label"
+    $lines += ""
+    $lines += ('- Repo: `{0}`' -f $repoPath)
+    $lines += ('- Branch: `{0}`' -f $branch)
+    $lines += ('- HEAD: `{0}`' -f $head)
+    if ($IncomingRef) { $lines += ('- Incoming wip: `{0}`' -f $IncomingRef) }
+    if ($IncomingSha) { $lines += ('- Incoming SHA: `{0}`' -f $IncomingSha) }
+    if ($LastApplied) { $lines += ('- Previous `wip.lastApplied`: `{0}`' -f $LastApplied) }
+    else { $lines += '- Previous `wip.lastApplied`: `(none)`' }
+    $lines += "- Reason: $Reason"
+    $lines += ""
+
+    if ($ConflictedFiles.Count -gt 0) {
+        $lines += "### Conflicted files"
+        $lines += ""
+        foreach ($f in $ConflictedFiles) { $lines += ('- `{0}`' -f $f) }
+        $lines += ""
+    }
+
+    if ($IncomingFiles.Count -gt 0) {
+        $lines += "### Incoming wip file changes"
+        $lines += ""
+        $lines += '```text'
+        $lines += $IncomingFiles
+        $lines += '```'
+        $lines += ""
+    }
+
+    if ($status.Count -gt 0) {
+        $lines += "### Current status"
+        $lines += ""
+        $lines += '```text'
+        $lines += $status
+        $lines += '```'
+        $lines += ""
+    }
+
+    $lines += "### Agent resolution checklist"
+    $lines += ""
+    $lines += "1. Inspect the repo and incoming wip:"
+    $lines += ('   - `git -C "{0}" status --short --branch`' -f $repoPath)
+    if ($IncomingRef) { $lines += ('   - `git -C "{0}" diff HEAD..{1}`' -f $repoPath, $IncomingRef) }
+    $lines += "2. If the incoming wip content is already represented on the current branch, do not edit files just to satisfy the merge."
+    $lines += "3. If real incoming work is missing, apply it intentionally and keep only the root-cause/current path."
+    if ($IncomingSha) { $lines += ('4. After the incoming wip has been accounted for, mark it applied: `git -C "{0}" config --local wip.lastApplied {1}`' -f $repoPath, $IncomingSha) }
+    else { $lines += '4. After the incoming wip has been accounted for, mark the exact incoming SHA as applied with `git config --local wip.lastApplied <sha>`.' }
+    $lines += '5. Rerun `unwip-all`. Resolution is complete only when it reports no warnings and this file is removed automatically.'
+    $lines += ""
+    $lines += "---"
+    $lines += ""
+
+    if ($firstReportThisRun) {
+        Set-Content -LiteralPath $GSADUsWipConflictReport -Value $lines -Encoding utf8
+    } else {
+        Add-Content -LiteralPath $GSADUsWipConflictReport -Value $lines -Encoding utf8
+    }
+}
+function Clear-WipConflictReportIfClean {
+    if ($global:GSADUsWipReport.Count -eq 0 -and (Test-Path -LiteralPath $GSADUsWipConflictReport)) {
+        Remove-Item -LiteralPath $GSADUsWipConflictReport -Force
+    }
+}
 function Show-WipReport {
     param([string]$Verb = "saved")
     if ($global:GSADUsWipReport.Count -gt 0) {
@@ -61,6 +157,11 @@ function Show-WipReport {
         Write-Host ("  !! {0} repo(s) NOT {1} — need attention before switching machines:" -f $global:GSADUsWipReport.Count, $Verb) -ForegroundColor Red
         foreach ($m in $global:GSADUsWipReport) { Write-Host "       - $m" -ForegroundColor Red }
         Write-Host "    Run 'unwip-all' here, resolve, then re-run." -ForegroundColor DarkGray
+        if (Test-Path -LiteralPath $GSADUsWipConflictReport) {
+            Write-Host "    Agent conflict report: $GSADUsWipConflictReport" -ForegroundColor Yellow
+        }
+    } elseif ($Verb -eq "synced") {
+        Clear-WipConflictReportIfClean
     }
 }
 
@@ -248,6 +349,10 @@ function Restore-RepoWip {
     if ($behind -gt 0) {
         git merge --ff-only -q "origin/$branch" 2>$null
         if ($LASTEXITCODE -ne 0) {
+            Write-WipConflictReport `
+                -Label $Label `
+                -Reason "'$branch' diverged from remote during unwip fast-forward" `
+                -LastApplied $last
             Add-WipAttention "$Label — '$branch' diverged from remote; resolve manually"
             Write-Host "  WARN $Label — '$branch' diverged from remote; resolve manually" -ForegroundColor Red
             if ($stashed) { git stash pop -q 2>$null }
@@ -259,6 +364,16 @@ function Restore-RepoWip {
     if ($incoming) {
         git cherry-pick --no-commit $other 2>$null
         if ($LASTEXITCODE -ne 0) {
+            $conflictedFiles = @(git diff --name-only --diff-filter=U 2>$null)
+            $incomingFiles = @(git diff --name-status "HEAD..$other" 2>$null)
+            Write-WipConflictReport `
+                -Label $Label `
+                -Reason "incoming wip conflicts with '$branch'" `
+                -IncomingRef $other `
+                -IncomingSha $otherSha `
+                -LastApplied $last `
+                -ConflictedFiles $conflictedFiles `
+                -IncomingFiles $incomingFiles
             # A conflicted '--no-commit' cherry-pick leaves an unmerged index and
             # conflict markers in the worktree; 'cherry-pick --abort' clears the
             # sequencer flag but NOT the half-merged tree. Hard-reset to the
@@ -288,6 +403,12 @@ function Restore-RepoWip {
         } else {
             git stash pop 2>&1 | Out-Null   # reapply local edits on top of updated branch
             if ($LASTEXITCODE -ne 0) {
+                $conflictedFiles = @(git diff --name-only --diff-filter=U 2>$null)
+                Write-WipConflictReport `
+                    -Label $Label `
+                    -Reason "local edits conflict after update; autostash kept" `
+                    -LastApplied $last `
+                    -ConflictedFiles $conflictedFiles
                 Add-WipAttention "$Label — local edits conflict after update; kept in 'git stash'"
                 Write-Host "  WARN $Label — local edits conflict after update; kept in 'git stash'" -ForegroundColor Red
             } else {
