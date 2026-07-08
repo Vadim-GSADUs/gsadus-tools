@@ -250,6 +250,18 @@ function Save-RepoWip {
         else { Write-Host "  skip $Label (clean)" -ForegroundColor DarkGray }
         return
     }
+    # Re-snapshotting an UNCHANGED dirty tree would mint a new SHA over
+    # identical content; the other machine judges "new incoming wip" by SHA, so
+    # every such snapshot triggers a phantom re-unwip there (and its own
+    # re-snapshot back — a daily ping-pong of the same bytes). If the snapshot
+    # tree matches what wip/<me> already holds, keep the existing ref.
+    $newTree = git write-tree 2>$null
+    $wipTree = git rev-parse --verify --quiet "origin/wip/$me^{tree}" 2>$null
+    if ($newTree -and $wipTree -and $newTree -eq $wipTree) {
+        git reset -q
+        Write-Host "  skip $Label (wip/$me already current)" -ForegroundColor DarkGray
+        return
+    }
     git commit --no-verify --no-gpg-sign -q -m "wip: $me $(Get-Date -Format 'yyyyMMdd-HHmm')"
     git push -q --force origin "HEAD:refs/heads/wip/$me"
     $pushOk = $LASTEXITCODE -eq 0
@@ -318,6 +330,20 @@ function Restore-RepoWip {
     $otherSha = if ($other) { git rev-parse $other 2>$null } else { $null }
     $last     = git config --local --get wip.lastApplied 2>$null
     $incoming = $other -and ($otherSha -ne $last)
+
+    # A new SHA does not always mean new content: re-snapshots and ping-ponged
+    # adoptions mint fresh SHAs over identical trees. If the incoming snapshot's
+    # tree matches what this repo already holds (committed + uncommitted), there
+    # is nothing to adopt — record it as applied instead of re-cherry-picking.
+    if ($incoming) {
+        git add -A 2>$null
+        $localTree = git write-tree 2>$null
+        git reset -q 2>$null
+        if ($localTree -and $localTree -eq (git rev-parse "$other^{tree}" 2>$null)) {
+            git config --local wip.lastApplied $otherSha
+            $incoming = $false
+        }
+    }
 
     $behindRaw = git rev-list "HEAD..origin/$branch" --count 2>$null
     $behind    = if ($behindRaw) { [int]$behindRaw } else { 0 }
@@ -403,6 +429,15 @@ function Restore-RepoWip {
         } else {
             git stash pop 2>&1 | Out-Null   # reapply local edits on top of updated branch
             if ($LASTEXITCODE -ne 0) {
+                # A pop can fail merely because the stashed content already
+                # landed via the pulled commits (e.g. an untracked file that is
+                # now tracked with identical content). That stash is a pure
+                # duplicate — drop it and finish clean instead of warning.
+                if (Test-WipStashRedundant 'stash@{0}') {
+                    git stash drop -q 2>$null
+                    Write-Host "  pull $Label (commits; local edits already included)" -ForegroundColor Cyan
+                    return
+                }
                 $conflictedFiles = @(git diff --name-only --diff-filter=U 2>$null)
                 Write-WipConflictReport `
                     -Label $Label `
