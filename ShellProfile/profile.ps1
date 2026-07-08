@@ -28,8 +28,15 @@ function Get-WipHost {
     (($env:COMPUTERNAME).ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
 }
 
+# Archived repos kept on disk as read-only reference. Their GitHub remotes are
+# archived (pushes rejected), so wip/unwip must skip them. Paths relative to $GSADUsRoot.
+$GSADUsRetiredRepos = @(
+    'PostProcess\DigitalDarkroom'   # archived 2026-07-07; superseded by PNGTools darkroom
+)
+
 function Get-WipRepos {
     # Only include repos whose origin points at Vadim-GSADUs (skips third-party forks)
+    $retired = $GSADUsRetiredRepos | ForEach-Object { Join-Path $GSADUsRoot $_ }
     $candidates = @()
     if (Test-Path "$GSADUsRoot\.git") { $candidates += $GSADUsRoot }
     Get-ChildItem $GSADUsRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
@@ -40,6 +47,7 @@ function Get-WipRepos {
     }
     $repos = @()
     foreach ($c in $candidates) {
+        if ($retired -contains $c) { continue }
         Push-Location $c
         $url = git remote get-url origin 2>$null
         if ($url -match "Vadim-GSADUs") { $repos += $c }
@@ -538,7 +546,6 @@ $GSADUsSshTargets = @{
 $GSADUsEnvFiles = @(
     'WebCatalog\pipeline\.env'
     'PostProcess\PNGTools\.env'
-    'PostProcess\DigitalDarkroom\.env'
 )
 
 function Get-GSPeer {
