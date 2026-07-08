@@ -32,6 +32,7 @@ function Get-WipHost {
 # archived (pushes rejected), so wip/unwip must skip them. Paths relative to $GSADUsRoot.
 $GSADUsRetiredRepos = @(
     'PostProcess\DigitalDarkroom'   # archived 2026-07-07; superseded by PNGTools darkroom
+    'PostProcess\Darkroom'          # archived 2026-07-07; stalled web console, PNGTools outgrew it
 )
 
 function Get-WipRepos {
