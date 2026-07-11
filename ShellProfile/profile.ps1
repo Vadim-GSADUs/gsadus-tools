@@ -168,10 +168,28 @@ function Show-WipReport {
         Write-Host "    Run 'unwip-all' here, resolve, then re-run." -ForegroundColor DarkGray
         if (Test-Path -LiteralPath $GSADUsWipConflictReport) {
             Write-Host "    Agent conflict report: $GSADUsWipConflictReport" -ForegroundColor Yellow
+            Invoke-WipConflictAgent
         }
     } elseif ($Verb -eq "synced") {
         Clear-WipConflictReportIfClean
     }
+}
+
+# The conflict report is written FOR an agent ("Do not ask the human to manage
+# this") — this is the hook that actually offers to spawn one. Interactive-only:
+# ask first, then open a seeded Claude session in the workspace root. Set
+# GSADUS_WIP_AGENT=0 to suppress the offer entirely.
+function Invoke-WipConflictAgent {
+    if ($env:GSADUS_WIP_AGENT -eq '0') { return }
+    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { return }
+    $ans = $null
+    try { $ans = Read-Host "    Launch Claude to resolve the conflict now? [Y/n]" }
+    catch { return }   # non-interactive host (scheduled/redirected) — skip
+    if ($ans -ne '' -and $ans -notmatch '^[Yy]') { return }
+    Push-Location $GSADUsRoot
+    try {
+        claude ("A GSADUs wip sync conflict was just detected. Read {0} and resolve each repo section by following its 'Agent resolution checklist'. Rules: prefer the root-cause/current path (workspace CLAUDE.md rule 6); if the incoming wip content is already represented on the current branch, do not edit files just to satisfy the merge; after accounting for incoming work set wip.lastApplied to the incoming SHA; finish by rerunning unwip-all and confirming the report file is removed automatically." -f $GSADUsWipConflictReport)
+    } finally { Pop-Location }
 }
 
 # -- core per-repo helpers (operate on the current directory) ------------------
@@ -510,6 +528,14 @@ function end-day {
     Write-Host ""
     Write-Host "Saving work across all repos..." -ForegroundColor Cyan
     wip-all
+    # Light vault scan runs headless in the background (survives the screen lock)
+    # and pushes its own vault commit — see Vault\scripts\wiki-scan.ps1.
+    $scan = "$GSADUsRoot\Vault\scripts\wiki-scan.ps1"
+    if ((Test-Path $scan) -and $env:GSADUS_ENDDAY_SCAN -ne '0') {
+        Write-Host ""
+        Write-Host "Launching background vault scan (light, today's repos only)..." -ForegroundColor Cyan
+        Start-Process pwsh -ArgumentList '-NoProfile','-File',$scan,'-Light' -WindowStyle Hidden
+    }
     Write-Host ""
     Write-Host "Locking screen." -ForegroundColor Yellow
     rundll32.exe user32.dll,LockWorkStation
@@ -704,4 +730,30 @@ if (`$_out -match 'ERROR|WARN') { `
 function Unregister-StartupUnwip {
     Unregister-ScheduledTask -TaskName "GSADUs-unwip-all" -Confirm:$false -ErrorAction SilentlyContinue
     Write-Host "Startup unwip removed." -ForegroundColor Yellow
+}
+
+# -- vault wiki-agent scan (Phase 2, activated 2026-07-10) ---------------------
+# Deep scan weekly via scheduled task; light scan rides end-day. Register the
+# weekly task on ONE machine only — the scan pushes vault main when done.
+
+function vault-scan {
+    param([switch]$Light, [switch]$DryRun)
+    & "$GSADUsRoot\Vault\scripts\wiki-scan.ps1" -Light:$Light -DryRun:$DryRun
+}
+
+function Register-WikiScan {
+    $action   = New-ScheduledTaskAction -Execute "pwsh" `
+        -Argument "-NoProfile -File `"$GSADUsRoot\Vault\scripts\wiki-scan.ps1`"" `
+        -WorkingDirectory $GSADUsRoot
+    $trigger  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 18:00
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 45) `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    Register-ScheduledTask -TaskName "GSADUs-wiki-scan" -Action $action `
+        -Trigger $trigger -Settings $settings -Force | Out-Null
+    Write-Host "Weekly vault wiki-scan registered (Sundays 18:00; register on one machine only)." -ForegroundColor Green
+}
+
+function Unregister-WikiScan {
+    Unregister-ScheduledTask -TaskName "GSADUs-wiki-scan" -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Host "Weekly vault wiki-scan removed." -ForegroundColor Yellow
 }
