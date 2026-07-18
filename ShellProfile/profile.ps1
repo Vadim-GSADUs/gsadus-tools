@@ -312,7 +312,19 @@ function Test-WipStashRedundant {
     # the tree, or is committed) and can be dropped losslessly. The check is
     # deliberately conservative: any doubt -> not redundant -> the stash is kept.
     param([string]$Ref)
-    if (git diff $Ref -- 2>$null) { return $false }   # tracked content differs
+    # Compare tracked content only over the paths the stash itself modified
+    # ($Ref^1 is the stash's base commit). A whole-tree `git diff $Ref` also
+    # flags files touched by commits landed AFTER the stash was taken, so a
+    # stash based on an older parent looked non-redundant forever even when
+    # every change it captured was already in HEAD. NUL-delimited so paths
+    # with spaces (e.g. "GSADUs Tools.tab") survive intact.
+    $rawPaths = git diff --name-only -z "$Ref^1" "$Ref" 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }        # can't enumerate -> keep
+    $paths = @((@($rawPaths) -join '') -split "`0" | Where-Object { $_ })
+    if ($paths.Count -gt 0) {
+        if (git diff $Ref -- $paths 2>$null) { return $false }   # tracked content differs
+        if ($LASTEXITCODE -ne 0) { return $false }
+    }
     # `git stash -u` records untracked files under the stash's 3rd parent.
     if (git rev-parse --verify --quiet "$Ref^3" 2>$null) {
         foreach ($f in (git ls-tree -r --name-only "$Ref^3" 2>$null)) {
