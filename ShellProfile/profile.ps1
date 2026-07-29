@@ -591,6 +591,7 @@ $GSADUsSshTargets = @{
 $GSADUsEnvFiles = @(
     'WebCatalog\pipeline\.env'
     'PostProcess\PNGTools\.env'
+    'SiteCheck\spike\config.js'
 )
 
 function Get-GSPeer {
