@@ -105,16 +105,28 @@ The `ColumnConfig` setting preserves your column order and visibility preference
 
 ## Quick Start
 
-### Option 1: Run the Batch File
-Double-click `TypeCatalogConverter.bat`
+### Option 1: Run the Batch File (recommended)
+Double-click `TypeCatalogConverter.bat`. It runs `Convert-TypeCatalog.ps1`
+directly, so you always get the current version.
 
 ### Option 2: Run the PowerShell Script
 Right-click `Convert-TypeCatalog.ps1` and select "Run with PowerShell"
 
 ### Option 3: Use the Standalone Executable
+`dist/` is build output and is **not tracked in git** — a fresh clone has no `.exe`.
+
 1. Run `Build-TypeCatalogConverter.ps1` to create the executable
 2. Find `TypeCatalogConverter.exe` in the `dist` folder
 3. Copy the exe anywhere and run it
+
+The `.exe` is a point-in-time snapshot: it does **not** update when
+`Convert-TypeCatalog.ps1` changes. Rebuild after any script change, or use the
+`.bat`, which cannot go stale.
+
+> **Note:** a previously committed `.exe` here was ~22KB behind the source and
+> predated the column-configuration feature documented below — the "Scan
+> Columns..." button simply did not exist in it. If your copy lacks that button,
+> you are running a stale build; rebuild it or use the `.bat`.
 
 ## Requirements
 
@@ -145,9 +157,9 @@ Right-click `Convert-TypeCatalog.ps1` and select "Run with PowerShell"
 | File | Description |
 |------|-------------|
 | `Convert-TypeCatalog.ps1` | Main PowerShell script with GUI |
-| `TypeCatalogConverter.bat` | Batch file launcher |
+| `TypeCatalogConverter.bat` | Batch file launcher (runs the source script) |
 | `Build-TypeCatalogConverter.ps1` | Script to create standalone .exe |
-| `dist/` | Output folder for built executable |
+| `dist/` | Build output — untracked, rebuild after script changes |
 
 ## Troubleshooting
 

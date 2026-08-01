@@ -30,8 +30,9 @@ Each generated catalog includes:
 
 ## Quick Start
 
-### Option 1: Run the Batch File (Simplest)
-Double-click `FamilyCatalogGenerator.bat` to launch the tool.
+### Option 1: Run the Batch File (Simplest, recommended)
+Double-click `FamilyCatalogGenerator.bat` to launch the tool. It runs
+`Generate-FamilyCatalog.ps1` directly, so you always get the current version.
 
 ### Option 2: Run the PowerShell Script
 Right-click `Generate-FamilyCatalog.ps1` and select "Run with PowerShell"
@@ -43,13 +44,18 @@ Right-click `Generate-FamilyCatalog.ps1` and select "Run with PowerShell"
 
 ## Building the Executable
 
-To create a standalone `.exe` file:
+`dist/` is build output and is **not tracked in git** — a fresh clone has no
+`.exe`. To create one:
 
 1. Open PowerShell
 2. Navigate to this folder
-3. Run: `.\Build-CatalogGenerator.ps1`
+3. Run: `.\Build-CatalogGenerator.ps1` (installs PS2EXE if needed)
 
 The executable will be created in the `dist` folder.
+
+The `.exe` is a point-in-time snapshot: it does **not** update when
+`Generate-FamilyCatalog.ps1` changes. Rebuild after any script change, or use the
+`.bat`, which cannot go stale.
 
 ## Default Category Paths
 
@@ -99,6 +105,6 @@ The CSV format enables future automation:
 | File | Description |
 |------|-------------|
 | `Generate-FamilyCatalog.ps1` | Main PowerShell script with GUI |
-| `FamilyCatalogGenerator.bat` | Batch file launcher |
+| `FamilyCatalogGenerator.bat` | Batch file launcher (runs the source script) |
 | `Build-CatalogGenerator.ps1` | Script to create standalone .exe |
-| `dist/` | Output folder for built executable |
+| `dist/` | Build output — untracked, rebuild after script changes |

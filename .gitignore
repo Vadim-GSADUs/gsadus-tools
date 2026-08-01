@@ -1,3 +1,11 @@
 *.tmp
 __pycache__/
 *.pyc
+
+# Build output. Each tool's dist/ is produced by its Build-*.ps1 (PS2EXE) and is
+# NOT tracked: committed binaries silently went stale against their sources
+# (MaterialsInstaller ~10KB behind, TypeCatalogConverter ~22KB behind) and users
+# running them got old behavior with no indication. Non-developers should launch
+# the .bat in each tool folder — it runs the source .ps1 directly, so it is
+# always current. See each tool's README.
+dist/

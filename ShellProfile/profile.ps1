@@ -35,6 +35,20 @@ $GSADUsRetiredRepos = @(
     'PostProcess\Darkroom'          # archived 2026-07-07; stalled web console, PNGTools outgrew it
 )
 
+# Secrets that live OUTSIDE git and hop between machines over SSH instead.
+# Paths relative to $GSADUsRoot. Declared here, at the top, because TWO
+# subsystems consume this one list and must never disagree about it:
+#   * push-env / pull-env  — ferry these files between the two PCs
+#   * Save-RepoWip's leak guard — refuses to wip a repo when one of these is
+#     no longer gitignored, so a ferried secret can't reach a wip/<host> branch
+# Adding a file here therefore protects it as well as ferries it. Do not
+# re-derive this list anywhere else; add the entry once, here.
+$GSADUsEnvFiles = @(
+    'WebCatalog\pipeline\.env'
+    'PostProcess\PNGTools\.env'
+    'SiteCheck\spike\config.js'
+)
+
 function Get-WipRepos {
     # Only include repos whose origin points at Vadim-GSADUs (skips third-party forks)
     $retired = $GSADUsRetiredRepos | ForEach-Object { Join-Path $GSADUsRoot $_ }
@@ -264,7 +278,28 @@ function Save-RepoWip {
     # exactly what would be committed. If a known secret file is no longer
     # ignored (e.g. .gitignore got weakened/synced away), refuse to wip this
     # repo instead of snapshotting the secret to the remote wip/<host> branch.
+    #
+    # Coverage is DERIVED from $GSADUsEnvFiles rather than restated here, so the
+    # ferried-secrets list and the guard cannot drift apart. Anything we hop
+    # between machines is by definition a secret this guard must block, and a
+    # new entry is now protected the moment it is added — no second edit, and no
+    # dependence on the file being named/shaped like a .env (SiteCheck's ferried
+    # secret is a config.js, which the shape patterns below would never catch).
+    #
+    # Matching is by absolute path: exact, filename-shape agnostic, and immune
+    # to a same-named file in some other repo. Save-RepoWip runs with the repo
+    # as the current directory (see section header), and `git ls-files` yields
+    # repo-relative forward-slash paths, so both sides resolve cleanly.
+    #
+    # The shape patterns remain as defense in depth — they catch secrets that
+    # are NOT ferried (a stray .env in any repo, service-account keys, GCS creds).
+    $repoRoot = (Get-Location).Path
+    $ferried  = @($GSADUsEnvFiles | ForEach-Object {
+        [IO.Path]::GetFullPath((Join-Path $GSADUsRoot $_))
+    })
     $leak = git ls-files --others --exclude-standard 2>$null | Where-Object {
+        $full = [IO.Path]::GetFullPath((Join-Path $repoRoot ($_ -replace '/', '\')))
+        ($ferried -contains $full) -or
         ($_ -match '(^|/)\.env($|\.)' -and $_ -notmatch '\.env\.example$') -or
         ($_ -match 'serviceaccount.*\.json$') -or
         ($_ -match '(^|/)gcs-.*\.json$')
@@ -587,12 +622,9 @@ $GSADUsSshTargets = @{
     'GSADUS-VADIM' = 'Vadim@gsadus-vadim'
 }
 
-# .env files that live outside git, relative to $GSADUsRoot.
-$GSADUsEnvFiles = @(
-    'WebCatalog\pipeline\.env'
-    'PostProcess\PNGTools\.env'
-    'SiteCheck\spike\config.js'
-)
+# The list of ferried files ($GSADUsEnvFiles) is declared at the top of this
+# file — the wip leak guard consumes it too, so it lives with the other
+# workspace-wide config rather than here.
 
 function Get-GSPeer {
     $me = $env:COMPUTERNAME.ToUpper()

@@ -53,20 +53,33 @@ Without all three, materials still render with pink "missing texture" placeholde
 
 ## Quick Start
 
-- **Batch:** double-click `MaterialsInstaller.bat`.
+- **Batch (recommended):** double-click `MaterialsInstaller.bat`. It runs
+  `Install-Materials.ps1` directly, so you always get the current version.
 - **PowerShell:** right-click `Install-Materials.ps1` -> Run with PowerShell.
-- **Standalone exe:** run `Build-Installer.ps1`, then `dist\MaterialsInstaller.exe`.
 
 Admin rights are no longer required (destination is no longer under Program Files).
+
+## Standalone Executable
+
+`dist/` is build output and is **not tracked in git** — a fresh clone has no
+`.exe`. To produce one, run `.\Build-Installer.ps1` (installs PS2EXE if needed);
+the result lands in `dist\MaterialsInstaller.exe`.
+
+The `.exe` is a point-in-time snapshot: it does **not** update when
+`Install-Materials.ps1` changes. Rebuild after any script change, or just use the
+`.bat`, which cannot go stale. Binaries were previously committed here and had
+silently fallen ~10KB behind the source — anyone running the old `.exe` got the
+pre-2026-05 behavior (no archive-bundle support, old folder picker) with no
+indication.
 
 ## Files
 
 | File | Description |
 |------|-------------|
 | `Install-Materials.ps1` | Main PowerShell script with GUI |
-| `MaterialsInstaller.bat` | Batch launcher |
+| `MaterialsInstaller.bat` | Batch launcher (runs the source script) |
 | `Build-Installer.ps1` | Builds standalone .exe via PS2EXE |
-| `dist/` | Build output (rebuild after script changes) |
+| `dist/` | Build output — untracked, rebuild after script changes |
 
 ## Image Extensions Recognized
 
