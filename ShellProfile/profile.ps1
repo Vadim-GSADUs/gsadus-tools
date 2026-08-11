@@ -28,12 +28,13 @@ function Get-WipHost {
     (($env:COMPUTERNAME).ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
 }
 
-# Archived repos kept on disk as read-only reference. Their GitHub remotes are
-# archived (pushes rejected), so wip/unwip must skip them. Paths relative to $GSADUsRoot.
+# Retired repos kept on disk as read-only reference. Their GitHub remotes are either
+# archived (pushes rejected) or deleted outright (every remote op fails), so wip/unwip
+# must skip them. Paths relative to $GSADUsRoot.
 $GSADUsRetiredRepos = @(
     'PostProcess\DigitalDarkroom'   # archived 2026-07-07; superseded by PNGTools darkroom
     'PostProcess\Darkroom'          # archived 2026-07-07; stalled web console, PNGTools outgrew it
-    'SiteCheck'                     # archived 2026-08-06; spec+spike only, module ships from WebApp
+    'SiteCheck'                     # retired 2026-08-06, GitHub repo DELETED 2026-08-11 (no remote); module ships from WebApp
 )
 
 function Get-WipRepos {
