@@ -595,6 +595,7 @@ $GSADUsEnvFiles = @(
     'PostProcess\PNGTools\.env'
     'SiteCheck\spike\config.js'
     'PM\.env.local'
+    'WebApp\.env.local'
 )
 
 function Get-GSPeer {
