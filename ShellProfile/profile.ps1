@@ -542,6 +542,13 @@ function unwip-all {
         Pop-Location
     }
     Show-WipReport -Verb "synced"
+    # Arriving at a PC stays one command: after a CLEAN sync, refresh the rendered
+    # .env files from Doppler too (see the secret rendering section below). Set
+    # GSADUS_UNWIP_PULLENV=0 to skip (same opt-out pattern as GSADUS_ENDDAY_SCAN).
+    if ($global:GSADUsWipReport.Count -eq 0 -and $env:GSADUS_UNWIP_PULLENV -ne '0') {
+        Write-Host ""
+        pull-env
+    }
 }
 
 function end-day {
@@ -561,162 +568,94 @@ function end-day {
     rundll32.exe user32.dll,LockWorkStation
 }
 
-# -- cross-PC secret (.env) sync ----------------------------------------------
+# -- secret (.env) rendering from Doppler --------------------------------------
 # .env files are gitignored (web-catalog has an external collaborator), so they
-# can't ride git like everything else. Instead they hop directly between PCs over
-# the existing Tailscale/OpenSSH link (see Vault wiki: remote-access, wip-sync).
+# can't ride git like everything else. Since the 2026-08-25 cutover, Doppler is
+# the single source of truth for every application secret (Vault wiki:
+# secrets-management) and the local files are rendered artifacts:
 #
-#   push-env   copy THIS machine's .env files to the other PC
-#   pull-env   copy the other PC's .env files to THIS machine
-#   -Force     override the rollback guard (see below)
+#   pull-env   render each repo's env file from Doppler; also chained onto the
+#              end of a clean unwip-all (set GSADUS_UNWIP_PULLENV=0 to skip)
+#   push-env   tombstone — there is no push. Edit the secret in Doppler
+#              (dashboard or 'doppler secrets set'), then pull-env per machine.
 #
-# Run these at the machine's OWN console. Don't drive them through a nested SSH
-# session (e.g. ssh OTHER-PC "... push-env") — the double remote-pwsh hop hangs.
-# To sync from afar, just run the opposite verb locally: to fetch the other PC's
-# secrets, run pull-env here; to send yours, run push-env here.
-#
-# Rollback guard: a file is only overwritten when the source copy DIFFERS AND is
-# NEWER than the destination. If the destination is newer (e.g. you just rolled a
-# key there), the transfer is BLOCKED so a stale secret can't clobber a fresh one.
-# -Force overrides it, but first stashes the newer destination copy to
-# %TEMP%\gsadus-env-backups (kept out of any repo so it can't trip the wip leak
-# guard), so nothing is ever truly lost. scp -p preserves mtimes so the
-# newer/older comparison stays honest across machines.
+# One-time machine enrollment: winget install doppler.doppler; doppler login.
+# Rotation = change the value once in Doppler; every consumer picks it up.
+# The old scp push/pull sync and its rollback guard are retired; they survive
+# in gsadus-tools git history if ever needed.
 
-# SSH target of each machine, keyed by COMPUTERNAME (Tailscale MagicDNS names).
-$GSADUsSshTargets = @{
-    'VG-HOME'      = 'User@vg-home'
-    'GSADUS-VADIM' = 'Vadim@gsadus-vadim'
-}
-
-# .env files that live outside git, relative to $GSADUsRoot.
-$GSADUsEnvFiles = @(
-    'WebCatalog\pipeline\.env'
-    'PostProcess\PNGTools\.env'
-    'SiteCheck\spike\config.js'
-    'PM\.env.local'
-    'WebApp\.env.local'
+# Render table: one Doppler config -> one gitignored local file (paths relative
+# to $GSADUsRoot). Mirrors the render-target table in the vault page.
+$GSADUsDopplerRenders = @(
+    @{ Project = 'webapp';     Config = 'dev'; Target = 'WebApp\.env.local' }
+    @{ Project = 'pm';         Config = 'dev'; Target = 'PM\.env.local' }
+    @{ Project = 'webcatalog'; Config = 'prd'; Target = 'WebCatalog\pipeline\.env' }
+    @{ Project = 'pngtools';   Config = 'prd'; Target = 'PostProcess\PNGTools\.env' }
 )
 
-function Get-GSPeer {
-    $me = $env:COMPUTERNAME.ToUpper()
-    if (-not $GSADUsSshTargets.ContainsKey($me)) {
-        Write-Host "  ERROR unknown machine '$me' — add it to `$GSADUsSshTargets in profile.ps1" -ForegroundColor Red
-        return $null
+function pull-env {
+    # Render every target in $GSADUsDopplerRenders. Doppler output is CAPTURED —
+    # values never hit the console — written to a temp file BESIDE the target,
+    # then swapped in with Move-Item so the live file is replaced atomically. A
+    # failed or empty render leaves the existing file untouched.
+    if (-not (Get-Command doppler -ErrorAction SilentlyContinue)) {
+        Write-Host "  ERROR doppler CLI not found — install and authenticate first:" -ForegroundColor Red
+        Write-Host "        winget install doppler.doppler" -ForegroundColor DarkGray
+        Write-Host "        doppler login" -ForegroundColor DarkGray
+        return
     }
-    $GSADUsSshTargets.Keys | Where-Object { $_ -ne $me } |
-        ForEach-Object { $GSADUsSshTargets[$_] } | Select-Object -First 1
-}
-
-function Invoke-GSRemote {
-    # Run a pwsh snippet on the peer. -EncodedCommand sidesteps every SSH/pwsh
-    # quoting pitfall for the small scripts we send.
-    #   -n            : never read local stdin (good hygiene; harmless locally)
-    #   BatchMode     : fail fast instead of blocking on any auth/host-key prompt
-    #   ConnectTimeout: don't hang if the peer is offline
-    # These run push/pull-env LOCALLY (one ssh hop to the peer). Driving the whole
-    # command through a nested SSH session is unsupported — see header note.
-    param([string]$Peer, [string]$Script)
-    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
-    ssh -n -o BatchMode=yes -o ConnectTimeout=10 $Peer "pwsh -NoProfile -EncodedCommand $enc"
-}
-
-function Format-EnvTime {
-    param([long]$Ticks)
-    if ($Ticks -le 0) { return '(none)' }
-    [datetime]::new($Ticks, [DateTimeKind]::Utc).ToLocalTime().ToString('MM-dd HH:mm')
-}
-
-function Sync-OneEnv {
-    param(
-        [Parameter(Mandatory)][string]$Rel,
-        [Parameter(Mandatory)][ValidateSet('push','pull')][string]$Direction,
-        [switch]$Force
-    )
-    $peer = Get-GSPeer
-    if (-not $peer) { return 'error' }
-
-    $local     = Join-Path $GSADUsRoot $Rel
-    $remoteFs  = "C:/GSADUs/$($Rel -replace '\\','/')"
-    $remoteScp = "${peer}:$remoteFs"
-
-    # local meta
-    if (Test-Path $local) {
-        $lHash  = (Get-FileHash $local -Algorithm SHA256).Hash
-        $lTicks = (Get-Item $local).LastWriteTimeUtc.Ticks
-    } else { $lHash = $null; $lTicks = 0 }
-
-    # remote meta (hash + UTC ticks, or MISSING) in one round trip
-    $metaScript = @"
-`$p = '$remoteFs'
-if (Test-Path `$p) { (Get-FileHash `$p -Algorithm SHA256).Hash + '|' + (Get-Item `$p).LastWriteTimeUtc.Ticks } else { 'MISSING' }
-"@
-    $raw = (Invoke-GSRemote $peer $metaScript | Out-String).Trim()
-    if (-not $raw) {
-        Write-Host "  ERROR $Rel — no response from $peer (online? SSH up?)" -ForegroundColor Red
-        return 'error'
-    }
-    if ($raw -eq 'MISSING') { $rHash = $null; $rTicks = 0 }
-    else { $parts = $raw -split '\|', 2; $rHash = $parts[0]; $rTicks = [long]$parts[1] }
-
-    if ($Direction -eq 'push') { $srcHash=$lHash; $srcTicks=$lTicks; $dstTicks=$rTicks; $dstLabel='remote'; $arrow='->' }
-    else                       { $srcHash=$rHash; $srcTicks=$rTicks; $dstTicks=$lTicks; $dstLabel='local';  $arrow='<-' }
-
-    if (-not $srcHash) {
-        Write-Host "  skip  $Rel (no source file to $Direction)" -ForegroundColor DarkGray
-        return 'skip'
-    }
-    if ($lHash -and $rHash -and $lHash -eq $rHash) {
-        Write-Host "  ok    $Rel (in sync)" -ForegroundColor DarkGray
-        return 'insync'
+    doppler me *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ERROR doppler CLI not ready ('doppler me' failed) — run: doppler login" -ForegroundColor Red
+        return
     }
 
-    # content differs (or dest missing) — block if we'd overwrite a NEWER dest
-    if ($dstTicks -gt $srcTicks -and -not $Force) {
-        Write-Host ("  BLOCK {0} — {1} is NEWER (src {2} < dst {3}); refusing to roll back. Use -Force to override." `
-            -f $Rel, $dstLabel, (Format-EnvTime $srcTicks), (Format-EnvTime $dstTicks)) -ForegroundColor Red
-        return 'blocked'
-    }
+    Write-Host "Rendering .env files from Doppler..." -ForegroundColor Cyan
+    foreach ($render in $GSADUsDopplerRenders) {
+        $project = $render.Project
+        $config  = $render.Config
+        $rel     = $render.Target
+        $target  = Join-Path $GSADUsRoot $rel
+        $dir     = Split-Path -Parent $target
+        if (-not (Test-Path $dir)) {
+            Write-Host "  WARN  $rel — folder missing (repo not cloned here?); skipped" -ForegroundColor Yellow
+            continue
+        }
 
-    # overwriting a newer dest under -Force: stash the newer copy first
-    if ($Force -and $dstTicks -gt $srcTicks) {
-        $bakDir = Join-Path $env:TEMP 'gsadus-env-backups'
-        New-Item -ItemType Directory -Force $bakDir | Out-Null
-        $bak = Join-Path $bakDir ('{0}.{1}.bak' -f ($Rel -replace '[\\/]','_'), (Get-Date -Format 'yyyyMMdd-HHmmss'))
-        if ($Direction -eq 'push') { scp -p -q -o BatchMode=yes -o ConnectTimeout=10 "$remoteScp" "$bak" } else { Copy-Item $local $bak -Force }
-        Write-Host "       stashed newer $dstLabel copy -> $bak" -ForegroundColor DarkYellow
-    }
+        # env-no-quotes, not env: the quoted format backslash-escapes " and \n, which
+        # node's dotenv (@next/env) mis-decodes for inline-JSON values (python-dotenv
+        # differs again). Raw unquoted lines are the format these files always used.
+        # Constraint: no rendered config may hold values with newlines, '#', or edge
+        # whitespace — multi-line secrets (e.g. NPM_RC) live only in Vercel-sync configs.
+        $rendered = doppler secrets download --project $project --config $config --no-file --format env-no-quotes 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $rendered) {
+            Write-Host "  WARN  $rel — render failed ($project/$config); existing file left untouched" -ForegroundColor Red
+            continue
+        }
 
-    if ($Direction -eq 'push') { scp -p -q -o BatchMode=yes -o ConnectTimeout=10 "$local" "$remoteScp" } else { scp -p -q -o BatchMode=yes -o ConnectTimeout=10 "$remoteScp" "$local" }
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  sync  $Rel ($dstLabel updated, $arrow $peer)" -ForegroundColor Cyan
-        return 'synced'
-    }
-    Write-Host "  ERROR $Rel — scp failed (exit $LASTEXITCODE)" -ForegroundColor Red
-    return 'error'
-}
-
-function Invoke-EnvSync {
-    param([ValidateSet('push','pull')][string]$Direction, [switch]$Force)
-    $peer = Get-GSPeer
-    if (-not $peer) { return }
-    Write-Host ("{0}ing .env files {1} {2}" -f $Direction, ($Direction -eq 'push' ? 'to' : 'from'), $peer) -ForegroundColor Cyan
-    $blocked = 0; $synced = 0
-    foreach ($f in $GSADUsEnvFiles) {
-        switch (Sync-OneEnv -Rel $f -Direction $Direction -Force:$Force) {
-            'blocked' { $blocked++ }
-            'synced'  { $synced++ }
+        # The temp name keeps the '.env.' prefix so repo .gitignores (and the wip
+        # secret-leak guard) still cover it even if a crash ever left it behind.
+        $tmp = Join-Path $dir ".env.doppler-tmp-$PID"
+        try {
+            Set-Content -LiteralPath $tmp -Value $rendered -Encoding utf8 -ErrorAction Stop
+            Move-Item -LiteralPath $tmp -Destination $target -Force -ErrorAction Stop
+            Write-Host "  render $rel <- $project/$config" -ForegroundColor Cyan
+        } catch {
+            Write-Host "  WARN  $rel — write failed ($($_.Exception.Message)); existing file left untouched" -ForegroundColor Red
+        } finally {
+            if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
         }
     }
-    if ($blocked -gt 0) {
-        Write-Host ("  !! {0} file(s) BLOCKED to avoid a rollback. Re-run '{1}-env -Force' only if you're sure." -f $blocked, $Direction) -ForegroundColor Red
-    } elseif ($synced -eq 0) {
-        Write-Host "  nothing to do — all in sync." -ForegroundColor DarkGray
-    }
 }
 
-function push-env { param([switch]$Force) Invoke-EnvSync -Direction push -Force:$Force }
-function pull-env { param([switch]$Force) Invoke-EnvSync -Direction pull -Force:$Force }
+function push-env {
+    # Tombstone — the scp push direction retired with the Doppler cutover
+    # (2026-08-25). Local files are rendered FROM Doppler, never pushed back.
+    # throw (not Write-Error): callers and 'pwsh -Command' must see a real failure.
+    throw ("push-env is retired: secrets are edited in Doppler (dashboard or " +
+        "'doppler secrets set --project <p> --config <c> NAME'), then rendered " +
+        "locally with 'pull-env' on each machine.")
+}
 
 # -- startup task helpers -----------------------------------------------------
 function Register-StartupUnwip {
