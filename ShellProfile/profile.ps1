@@ -574,10 +574,23 @@ function end-day {
 # the single source of truth for every application secret (Vault wiki:
 # secrets-management) and the local files are rendered artifacts:
 #
-#   pull-env   render each repo's env file from Doppler; also chained onto the
+#   pull-env   render each repo's env file from Doppler, then bridge PM's
+#              NODE_AUTH_TOKEN into npm auth (see below); also chained onto the
 #              end of a clean unwip-all (set GSADUS_UNWIP_PULLENV=0 to skip)
 #   push-env   tombstone — there is no push. Edit the secret in Doppler
 #              (dashboard or 'doppler secrets set'), then pull-env per machine.
+#
+# npm auth seam: the @gsadus scope (@gsadus/pipedrive and friends) lives on
+# GitHub Packages, and each consuming repo's committed .npmrc reads its token
+# from ${NODE_AUTH_TOKEN} — which npm takes from the PROCESS environment and
+# never from a .env.local. pull-env therefore mirrors PM's rendered
+# NODE_AUTH_TOKEN into one MANAGED line in the user-level ~/.npmrc (rewritten
+# every run) and exports it for the current session, so a fresh pull-env is all
+# a machine needs before 'npm install'. Every LATER shell gets the variable back
+# from that managed line at profile load (Restore-GSADUsNpmAuthEnv — the repo
+# .npmrc's own ${NODE_AUTH_TOKEN} line outranks user config, so an unset
+# variable would shadow the token with an empty one). Rotation stays
+# Doppler -> pull-env.
 #
 # One-time machine enrollment: winget install doppler.doppler; doppler login.
 # Rotation = change the value once in Doppler; every consumer picks it up.
@@ -592,6 +605,43 @@ $GSADUsDopplerRenders = @(
     @{ Project = 'webcatalog'; Config = 'prd'; Target = 'WebCatalog\pipeline\.env' }
     @{ Project = 'pngtools';   Config = 'prd'; Target = 'PostProcess\PNGTools\.env' }
 )
+
+# The single ~/.npmrc line pull-env owns. The marker comment is what makes the
+# rewrite idempotent: both it and any bare auth line for the registry are
+# dropped before the fresh pair is appended, so the file never accumulates
+# stale tokens. ASCII only — this text lands in an ini file npm parses.
+$GSADUsNpmAuthMarker = '# managed by pull-env (GSADUs): @gsadus scope on GitHub Packages - rotate in Doppler'
+$GSADUsNpmAuthKey    = '//npm.pkg.github.com/:_authToken='
+
+function Sync-GSADUsNpmAuth {
+    # Bridge PM's rendered NODE_AUTH_TOKEN to npm: a managed ~/.npmrc auth line
+    # (npm reads no .env file) plus a session export, so 'npm install' resolves
+    # the private @gsadus scope immediately after a pull-env. The value is only
+    # ever read into memory and written to $HOME — never echoed, never copied
+    # into a repo. A missing token is not an error: only PM renders one today.
+    $envFile = Join-Path $GSADUsRoot 'PM\.env.local'
+    if (-not (Test-Path -LiteralPath $envFile)) { return }
+    $match = Select-String -LiteralPath $envFile -Pattern '^\s*NODE_AUTH_TOKEN\s*=' | Select-Object -First 1
+    if (-not $match) { return }
+    $token = ($match.Line -replace '^\s*NODE_AUTH_TOKEN\s*=\s*', '').Trim().Trim('"').Trim("'")
+    if (-not $token) { return }
+
+    $env:NODE_AUTH_TOKEN = $token
+
+    $npmrc = Join-Path $HOME '.npmrc'
+    $kept = @()
+    if (Test-Path -LiteralPath $npmrc) {
+        $kept = @(Get-Content -LiteralPath $npmrc | Where-Object {
+            $_ -notlike "$GSADUsNpmAuthMarker*" -and $_.Trim() -notlike "$GSADUsNpmAuthKey*"
+        })
+    }
+    try {
+        Set-Content -LiteralPath $npmrc -Value @($kept + @($GSADUsNpmAuthMarker, "$GSADUsNpmAuthKey$token")) -Encoding utf8 -ErrorAction Stop
+        Write-Host "  npmauth ~/.npmrc <- NODE_AUTH_TOKEN (@gsadus scope; exported for this session)" -ForegroundColor Cyan
+    } catch {
+        Write-Host "  WARN  ~/.npmrc — write failed ($($_.Exception.Message)); npm auth left as it was" -ForegroundColor Red
+    }
+}
 
 function pull-env {
     # Render every target in $GSADUsDopplerRenders. Doppler output is CAPTURED —
@@ -646,7 +696,31 @@ function pull-env {
             if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
         }
     }
+
+    Sync-GSADUsNpmAuth
 }
+
+function Restore-GSADUsNpmAuthEnv {
+    # Every shell needs NODE_AUTH_TOKEN, not just the one that ran pull-env: a
+    # consuming repo's committed .npmrc sets
+    # '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}', and project config
+    # OUTRANKS user config — so with the variable unset that empty expansion
+    # SHADOWS the managed ~/.npmrc line and npm install fails 401 (measured
+    # 2026-08-31). Rehydrating the variable from that same managed line at
+    # profile load keeps one owner for the value (Doppler -> pull-env ->
+    # ~/.npmrc) while making every new shell install-ready. Silent by design;
+    # never overrides a variable the session already set (CI, an ad-hoc token).
+    if ($env:NODE_AUTH_TOKEN) { return }
+    $npmrc = Join-Path $HOME '.npmrc'
+    if (-not (Test-Path -LiteralPath $npmrc)) { return }
+    $line = Get-Content -LiteralPath $npmrc -ErrorAction SilentlyContinue |
+        Where-Object { $_.Trim() -like "$GSADUsNpmAuthKey*" } | Select-Object -First 1
+    if (-not $line) { return }
+    $token = $line.Trim().Substring($GSADUsNpmAuthKey.Length).Trim()
+    if ($token) { $env:NODE_AUTH_TOKEN = $token }
+}
+
+Restore-GSADUsNpmAuthEnv
 
 function push-env {
     # Tombstone — the scp push direction retired with the Doppler cutover
