@@ -731,6 +731,11 @@ function push-env {
         "locally with 'pull-env' on each machine.")
 }
 
+function sentry-probe {
+    # Read-only Sentry probe for the whole gsadus org (Tools\Sentry\README.md).
+    # GET-only by construction; token read from Doppler webapp/dev at call time.
+    node "$GSADUsRoot\Tools\Sentry\sentry-probe.mjs" @args
+}
 # -- startup task helpers -----------------------------------------------------
 function Register-StartupUnwip {
     # The scheduled task dot-sources the tracked profile directly (not $PROFILE),

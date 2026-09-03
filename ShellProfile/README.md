@@ -34,6 +34,8 @@ never needs editing again.
 | `wip-all` / `unwip-all` | Same across every GSADUs repo. |
 | `end-day` | `wip-all` then lock the screen. |
 | `Register-StartupUnwip` / `Unregister-StartupUnwip` | Add/remove the at-logon `unwip-all` scheduled task. |
+| `pull-env` | Render every repo's env file from Doppler (values never echoed). |
+| `sentry-probe` | Read-only Sentry issues/events for any project in the org — see `..\Sentry\README.md`. |
 
 ## Sync model
 
