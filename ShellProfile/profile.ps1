@@ -736,6 +736,106 @@ function sentry-probe {
     # GET-only by construction; token read from Doppler webapp/dev at call time.
     node "$GSADUsRoot\Tools\Sentry\sentry-probe.mjs" @args
 }
+# -- Google Workspace CLI login (gws) ------------------------------------------
+# gws-login: ONE grant for everything gws can drive as vadim@ (read + write),
+# so the daily gsadus.com reauth is never repeated for "one more scope".
+# The consent screen on gsadus-catalog-project is INTERNAL (checked 2026-09-04):
+# no 25-scope testing-mode cap, no test-user list, no "unverified app" page.
+# Rules baked in (mirror gws 0.22.5 resolve_scopes / scope-picker logic):
+#   * broadest scope per family only (drive already covers drive.file, .readonly,
+#     .metadata ...; chat.messages covers chat.messages.create/.reactions ...);
+#   * gmail.metadata never - it restricts the token even beside gmail.modify;
+#   * app-only scopes never (chat.bot, chat.app.*, chat.import, keep.*) - Google
+#     refuses them on a user consent;
+#   * identity scopes (openid/email/profile) never - gws appends them itself;
+#   * permanent-delete and directory-WRITE scopes only with -Unrestricted.
+# A login REPLACES the grant (no merge), so the full list goes every time, and
+# the stale access token in token_cache.json is removed first (it keeps 403ing
+# "insufficient authentication scopes" against the new grant otherwise).
+# Vault runbook: wiki/curated/gws-cli-setup.md.
+$GSADUsGwsScopes = @(
+    # Drive / Docs / Sheets / Slides / Forms
+    'https://www.googleapis.com/auth/drive'
+    'https://www.googleapis.com/auth/documents'
+    'https://www.googleapis.com/auth/spreadsheets'
+    'https://www.googleapis.com/auth/presentations'
+    'https://www.googleapis.com/auth/forms.body'
+    'https://www.googleapis.com/auth/forms.responses.readonly'
+    # Gmail: modify = read / compose / send / label, NOT permanent delete
+    'https://www.googleapis.com/auth/gmail.modify'
+    'https://www.googleapis.com/auth/gmail.settings.basic'
+    'https://www.googleapis.com/auth/gmail.settings.sharing'
+    # Calendar / Tasks
+    'https://www.googleapis.com/auth/calendar'
+    'https://www.googleapis.com/auth/tasks'
+    # People (contacts + domain directory + own-profile reads)
+    'https://www.googleapis.com/auth/contacts'
+    'https://www.googleapis.com/auth/directory.readonly'
+    'https://www.googleapis.com/auth/user.addresses.read'
+    'https://www.googleapis.com/auth/user.birthday.read'
+    'https://www.googleapis.com/auth/user.emails.read'
+    'https://www.googleapis.com/auth/user.gender.read'
+    'https://www.googleapis.com/auth/user.organization.read'
+    'https://www.googleapis.com/auth/user.phonenumbers.read'
+    # Chat (spaces, members, MESSAGES, admin enumeration, user state)
+    'https://www.googleapis.com/auth/chat.spaces'
+    'https://www.googleapis.com/auth/chat.memberships'
+    'https://www.googleapis.com/auth/chat.messages'
+    'https://www.googleapis.com/auth/chat.admin.spaces'
+    'https://www.googleapis.com/auth/chat.admin.memberships'
+    'https://www.googleapis.com/auth/chat.customemojis'
+    'https://www.googleapis.com/auth/chat.users.availability'
+    'https://www.googleapis.com/auth/chat.users.readstate'
+    'https://www.googleapis.com/auth/chat.users.sections'
+    'https://www.googleapis.com/auth/chat.users.spacesettings'
+    # Meet
+    'https://www.googleapis.com/auth/meetings.space.created'
+    'https://www.googleapis.com/auth/meetings.space.readonly'
+    'https://www.googleapis.com/auth/meetings.space.settings'
+    # Apps Script API
+    'https://www.googleapis.com/auth/script.projects'
+    'https://www.googleapis.com/auth/script.deployments'
+    'https://www.googleapis.com/auth/script.processes'
+    'https://www.googleapis.com/auth/script.metrics'
+    # Admin SDK: audit / usage reports + directory READ (gws has no directory
+    # service alias; these serve 'gws auth export' + curl only)
+    'https://www.googleapis.com/auth/admin.reports.audit.readonly'
+    'https://www.googleapis.com/auth/admin.reports.usage.readonly'
+    'https://www.googleapis.com/auth/admin.directory.user.readonly'
+    'https://www.googleapis.com/auth/admin.directory.group.readonly'
+    # GCP platform (quota project + Pub/Sub for Workspace Events)
+    'https://www.googleapis.com/auth/pubsub'
+    'https://www.googleapis.com/auth/cloud-platform'
+)
+# Opt-in tier: irreversible or org-wide-write powers. Deliberately NOT in the
+# daily grant - an agent with these can permanently delete mail / spaces or
+# rewrite directory users. Superset scopes: the *.readonly twins are dropped.
+$GSADUsGwsUnrestrictedScopes = @(
+    'https://mail.google.com/'                                 # Gmail incl. permanent delete
+    'https://www.googleapis.com/auth/chat.delete'              # delete spaces you manage
+    'https://www.googleapis.com/auth/chat.admin.delete'        # delete ANY space (admin)
+    'https://www.googleapis.com/auth/admin.directory.user'     # directory user WRITE
+    'https://www.googleapis.com/auth/admin.directory.group'    # directory group WRITE
+)
+function gws-login {
+    # Daily gws reauth with the standing full grant. -Unrestricted adds the
+    # delete / directory-write tier; -ListScopes prints the list and exits.
+    [CmdletBinding()]
+    param([switch]$Unrestricted, [switch]$ListScopes)
+    $scopes = @($GSADUsGwsScopes)
+    if ($Unrestricted) {
+        $subsumed = @('https://www.googleapis.com/auth/admin.directory.user.readonly',
+                      'https://www.googleapis.com/auth/admin.directory.group.readonly')
+        $scopes = @($scopes | Where-Object { $subsumed -notcontains $_ }) + $GSADUsGwsUnrestrictedScopes
+    }
+    if ($ListScopes) { return $scopes }
+    $cache = Join-Path $HOME '.config\gws\token_cache.json'
+    if (Test-Path $cache) { Remove-Item $cache -Force }   # stale access token = 403s
+    & gws auth login --scopes ($scopes -join ',')
+    if ($LASTEXITCODE -ne 0) { throw "gws auth login failed (exit $LASTEXITCODE)" }
+    $tier = if ($Unrestricted) { ' (UNRESTRICTED tier included)' } else { '' }
+    Write-Host ("gws-login: requested {0} scopes{1}. Verify: gws auth status" -f $scopes.Count, $tier)
+}
 # -- startup task helpers -----------------------------------------------------
 function Register-StartupUnwip {
     # The scheduled task dot-sources the tracked profile directly (not $PROFILE),
