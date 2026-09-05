@@ -196,7 +196,7 @@ function Invoke-WipConflictAgent {
         # the whole checklist is git surgery, so per-command approval is pure noise.
         claude --model claude-opus-4-8 --permission-mode acceptEdits `
             --allowedTools "Bash(git:*)" "PowerShell(git:*)" "Edit" "Write" `
-            ("A GSADUs wip sync conflict was just detected. Read {0} and resolve each repo section by following its 'Agent resolution checklist'. Rules: prefer the root-cause/current path (workspace CLAUDE.md rule 6); if the incoming wip content is already represented on the current branch, do not edit files just to satisfy the merge; after accounting for incoming work set wip.lastApplied to the incoming SHA; finish by rerunning unwip-all and confirming the report file is removed automatically." -f $GSADUsWipConflictReport)
+            ("A GSADUs wip sync conflict was just detected. Read {0} and resolve each repo section by following its 'Agent resolution checklist'. Rules: prefer the root-cause/current path (workspace AGENTS.md rule 6); if the incoming wip content is already represented on the current branch, do not edit files just to satisfy the merge; after accounting for incoming work set wip.lastApplied to the incoming SHA; finish by rerunning unwip-all and confirming the report file is removed automatically." -f $GSADUsWipConflictReport)
     } finally { Pop-Location }
 }
 
