@@ -741,6 +741,23 @@ function sentry-probe {
 # so the daily gsadus.com reauth is never repeated for "one more scope".
 # The consent screen on gsadus-catalog-project is INTERNAL (checked 2026-09-04):
 # no 25-scope testing-mode cap, no test-user list, no "unverified app" page.
+#
+# HARD CEILING - the list is capped by Google, not by us (found 2026-09-08).
+# Google's consent endpoint carries the flow state in a `part` query parameter and
+# rejects it over ~6,730 chars with a bare "Error 400 (Bad Request) ... malformed"
+# page - no OAuth error code, so it looks like nothing is wrong. The size is
+# content-independent (6,839 chars of literal 'A' fails identically); only length
+# matters. Two consent implementations exist and they are NOT the same size:
+#     /signin/oauth/legacy/consent   45 scopes -> part =   866   (huge headroom)
+#     /signin/oauth/v3/consent       45 scopes -> part = 6,839   (~110 OVER)
+# Google routes you to one or the other; it is not selectable from the request.
+# On 2026-09-08 this grant started 400ing on v3 with NOTHING changed locally
+# (same profile.ps1, gws.exe, client_secret.json, gcloud) - it had succeeded on
+# 2026-09-04 via legacy. So: adding scopes is no longer free. If consent 400s
+# after a scope addition, REMOVE scopes - do not re-run, re-auth, or chase an
+# OAuth error code, there isn't one. Trimmed 42 -> 32 on 2026-09-08 for margin.
+# Diagnosing: paste the failing URL and measure the `part` param's length.
+#
 # Rules baked in (mirror gws 0.22.5 resolve_scopes / scope-picker logic):
 #   * broadest scope per family only (drive already covers drive.file, .readonly,
 #     .metadata ...; chat.messages covers chat.messages.create/.reactions ...);
@@ -768,15 +785,12 @@ $GSADUsGwsScopes = @(
     # Calendar / Tasks
     'https://www.googleapis.com/auth/calendar'
     'https://www.googleapis.com/auth/tasks'
-    # People (contacts + domain directory + own-profile reads)
+    # People (contacts + domain directory). The six user.*.read scopes (addresses,
+    # birthday, emails, gender, organization, phonenumbers) were dropped 2026-09-08
+    # for the ceiling: they read the SIGNED-IN user's own profile fields, while the
+    # CRM People sync reads domain users, which contacts + directory.readonly cover.
     'https://www.googleapis.com/auth/contacts'
     'https://www.googleapis.com/auth/directory.readonly'
-    'https://www.googleapis.com/auth/user.addresses.read'
-    'https://www.googleapis.com/auth/user.birthday.read'
-    'https://www.googleapis.com/auth/user.emails.read'
-    'https://www.googleapis.com/auth/user.gender.read'
-    'https://www.googleapis.com/auth/user.organization.read'
-    'https://www.googleapis.com/auth/user.phonenumbers.read'
     # Chat (spaces, members, MESSAGES, admin enumeration, user state)
     'https://www.googleapis.com/auth/chat.spaces'
     'https://www.googleapis.com/auth/chat.memberships'
@@ -784,19 +798,18 @@ $GSADUsGwsScopes = @(
     'https://www.googleapis.com/auth/chat.admin.spaces'
     'https://www.googleapis.com/auth/chat.admin.memberships'
     'https://www.googleapis.com/auth/chat.customemojis'
-    'https://www.googleapis.com/auth/chat.users.availability'
+    # chat.users.availability + chat.users.sections dropped 2026-09-08 (ceiling):
+    # per-user Chat UI state, unused - the spaces audit runs on the four above.
     'https://www.googleapis.com/auth/chat.users.readstate'
-    'https://www.googleapis.com/auth/chat.users.sections'
     'https://www.googleapis.com/auth/chat.users.spacesettings'
     # Meet
     'https://www.googleapis.com/auth/meetings.space.created'
     'https://www.googleapis.com/auth/meetings.space.readonly'
     'https://www.googleapis.com/auth/meetings.space.settings'
-    # Apps Script API
+    # Apps Script API (script.processes + script.metrics dropped 2026-09-08 for the
+    # ceiling - telemetry only; clasp needs projects + deployments)
     'https://www.googleapis.com/auth/script.projects'
     'https://www.googleapis.com/auth/script.deployments'
-    'https://www.googleapis.com/auth/script.processes'
-    'https://www.googleapis.com/auth/script.metrics'
     # Admin SDK: audit / usage reports + directory READ (gws has no directory
     # service alias; these serve 'gws auth export' + curl only)
     'https://www.googleapis.com/auth/admin.reports.audit.readonly'
