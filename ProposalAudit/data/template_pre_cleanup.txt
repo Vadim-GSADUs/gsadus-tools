@@ -1,0 +1,114 @@
+Pre-cleanup proposal template structure
+Captured 2026-09-10 by Tools/ProposalAudit/scan_proposals.py, immediately BEFORE
+the Tier 1 pass removed '1 - Takeoff & Estimate/3rd Party Coordination'.
+
+93 directories, 13 files.
+This is the shape every proposal was minted with from ~PP25 through PP360.
+========================================================================
+
+1 - Takeoff & Estimate/
+    3rd Party Coordination/
+        0 - Takeoff & Estimating/
+            V1/
+        DIV-01 = Pre-Construction/
+            1 - Material/
+            2 - Labor/
+        DIV-02 = Site Improvements/
+            1 - Material/
+                Demo/
+                Fencing/
+                Grading & Earthwork/
+                Landscaping/
+                Trenching/
+            2 - Labor/
+                Demo/
+                Fencing/
+                Grading & Earthwork/
+                Landscaping/
+                Trenching/
+        DIV-03 = Concrete/
+            1 - Material/
+            2 - Labor/
+        DIV-04 = Framing/
+            1 - Material/
+            2 - Labor/
+        DIV-05 = Mechanical/
+            1 - Material/
+            2 - Labor/
+        DIV-06 = Electrical/
+            1 - Material/
+            2 - Labor/
+        DIV-07 = Plumbing/
+            1 - Material/
+            2 - Labor/
+        DIV-08 = Fire Sprinklers/
+            1 - Material/
+            2 - Labor/
+        DIV-09 = Roofing/
+            1 - Material/
+            2 - Labor/
+        DIV-10 = Solar/
+            1 - Material/
+            2 - Labor/
+        DIV-11 = Openings/
+            1 - Material/
+            2 - Labor/
+        DIV-12 = Wall Coverings/
+            1 - Material/
+            2 - Labor/
+        DIV-13 = Gutters & Downspouts/
+            1 - Material/
+            2 - Labor/
+        DIV-14 = Insulation/
+            1 - Material/
+            2 - Labor/
+        DIV-15 = Drywall/
+            1 - Material/
+            2 - Labor/
+        DIV-16 = Floor Coverings & Masonary/
+            1 - Material/
+            2 - Labor/
+        DIV-17 = Paint(s)/
+            1 - Material/
+            2 - Labor/
+        DIV-18 = Finish Carpentry/
+            1 - Material/
+            2 - Labor/
+        DIV-19 = Appliance(s)/
+            1 - Material/
+            2 - Labor/
+        DIV-20 = Project Close Out/
+            1 - Material/
+            2 - Labor/
+    Approved Project Estimate/
+        V1/
+2 - Proposal - Contract/
+    Change Order(s)/
+        Change Order Form - Template.docx
+    Service Contract 0 - Standard Template.docx
+    Service Contract 1 - City Sewer - Central.docx
+    Service Contract 2 - City Sewer - Mini Split.docx
+    Service Contract 3 - Septic - Central.docx
+    Service Contract 4 - Septic - Mini Split.docx
+3 - Supporting Documents/
+    A - Site Walkthrough/
+        ADU Site Visit - MASTER.pdf
+        GSADU's - RELEASE OF LIABILITY.pdf
+        Images & Videos/
+    B - Questionnaire & Selection/
+        ADU Site Visit - MASTER 2.pdf
+        ADU Site Visit - MASTER.docx
+        ADU Site Visit - MASTER.pdf
+        Interior Design Bundles Selection.docx
+    C - Received from Client/
+        Client Notes & Requests/
+        Documents/
+    D - Plan Set/
+    Z - Other Misc/
+        PP00 - Lien Waiver And Release.docx
+4 - Administrative & Change-Issues/
+    1 - Change Order Request/
+    2 - Construction Issues/
+    3 - Warranty/
+    4 - Notice Of Completion/
+    5 - Certificate of Occupancy/
