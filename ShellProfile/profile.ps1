@@ -600,10 +600,10 @@ function end-day {
 # Render table: one Doppler config -> one gitignored local file (paths relative
 # to $GSADUsRoot). Mirrors the render-target table in the vault page.
 $GSADUsDopplerRenders = @(
-    @{ Project = 'webapp';     Config = 'dev'; Target = 'WebApp\.env.local' }
-    @{ Project = 'pm';         Config = 'dev'; Target = 'PM\.env.local' }
-    @{ Project = 'webcatalog'; Config = 'prd'; Target = 'WebCatalog\pipeline\.env' }
-    @{ Project = 'pngtools';   Config = 'prd'; Target = 'PostProcess\PNGTools\.env' }
+    @{ Repo = 'WebApp'; Project = 'webapp'; Config = 'dev'; Target = 'WebApp\.env.local' }
+    @{ Repo = 'PM'; Project = 'pm'; Config = 'dev'; Target = 'PM\.env.local' }
+    @{ Repo = 'WebCatalog'; Project = 'webcatalog'; Config = 'prd'; Target = 'WebCatalog\pipeline\.env' }
+    @{ Repo = 'PostProcess\PNGTools'; Project = 'pngtools'; Config = 'prd'; Target = 'PostProcess\PNGTools\.env' }
 )
 
 # The single ~/.npmrc line pull-env owns. The marker comment is what makes the
@@ -643,12 +643,40 @@ function Sync-GSADUsNpmAuth {
     }
 }
 
+function Get-GSADUsWorktreeContext {
+    param([string]$Path = (Get-Location).Path)
+    $root = git -C $Path rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'Setup requires a Git checkout.' }
+    $common = git -C $Path rev-parse --path-format=absolute --git-common-dir 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the shared Git directory.' }
+    $main = [IO.Path]::GetFullPath((Split-Path $common -Parent))
+    $root = [IO.Path]::GetFullPath($root)
+    $render = $GSADUsDopplerRenders | Where-Object {
+        [IO.Path]::GetFullPath((Join-Path $GSADUsRoot $_.Repo)) -eq $main
+    } | Select-Object -First 1
+    if (-not $render) { throw 'Checkout is not a registered GSADUs environment target.' }
+    [pscustomobject]@{
+        Root = $root; Main = $main; Render = $render
+        EnvPath = Join-Path $root $render.Target.Substring($render.Repo.Length + 1)
+    }
+}
+
 function pull-env {
+    [CmdletBinding()]
+    param([string]$RepoPath, [switch]$MissingOnly)
     # Render every target in $GSADUsDopplerRenders. Doppler output is CAPTURED —
     # values never hit the console — written to a temp file BESIDE the target,
     # then swapped in with Move-Item so the live file is replaced atomically. A
     # failed or empty render leaves the existing file untouched.
+    $renders = $GSADUsDopplerRenders
+    $context = $null
+    if ($RepoPath) {
+        $context = Get-GSADUsWorktreeContext -Path $RepoPath
+        $renders = @($context.Render)
+        if ($MissingOnly -and (Test-Path -LiteralPath $context.EnvPath)) { return }
+    }
     if (-not (Get-Command doppler -ErrorAction SilentlyContinue)) {
+        if ($RepoPath) { throw 'Doppler CLI missing. Install and authenticate Doppler first.' }
         Write-Host "  ERROR doppler CLI not found — install and authenticate first:" -ForegroundColor Red
         Write-Host "        winget install doppler.doppler" -ForegroundColor DarkGray
         Write-Host "        doppler login" -ForegroundColor DarkGray
@@ -656,20 +684,30 @@ function pull-env {
     }
     doppler me *> $null
     if ($LASTEXITCODE -ne 0) {
+        if ($RepoPath) { throw 'Doppler authentication failed. Run doppler login.' }
         Write-Host "  ERROR doppler CLI not ready ('doppler me' failed) — run: doppler login" -ForegroundColor Red
         return
     }
 
     Write-Host "Rendering .env files from Doppler..." -ForegroundColor Cyan
-    foreach ($render in $GSADUsDopplerRenders) {
+    foreach ($render in $renders) {
         $project = $render.Project
         $config  = $render.Config
         $rel     = $render.Target
         $target  = Join-Path $GSADUsRoot $rel
+        if ($context) { $target = $context.EnvPath }
         $dir     = Split-Path -Parent $target
         if (-not (Test-Path $dir)) {
+            if ($RepoPath) { throw "Environment directory missing: $dir" }
             Write-Host "  WARN  $rel — folder missing (repo not cloned here?); skipped" -ForegroundColor Yellow
             continue
+        }
+
+        # Refuse to materialize a secret in a tracked or unignored location.
+        $tmp = Join-Path $dir ".env.doppler-tmp-$PID"
+        foreach ($secretPath in @($target, $tmp)) {
+            git -C $dir check-ignore -q -- $secretPath
+            if ($LASTEXITCODE -ne 0) { throw "Secret destination must be gitignored and untracked: $secretPath" }
         }
 
         # env-no-quotes, not env: the quoted format backslash-escapes " and \n, which
@@ -679,6 +717,7 @@ function pull-env {
         # whitespace — multi-line secrets (e.g. NPM_RC) live only in Vercel-sync configs.
         $rendered = doppler secrets download --project $project --config $config --no-file --format env-no-quotes 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $rendered) {
+            if ($RepoPath) { throw "Doppler render failed ($project/$config); existing file preserved." }
             Write-Host "  WARN  $rel — render failed ($project/$config); existing file left untouched" -ForegroundColor Red
             continue
         }
@@ -691,13 +730,21 @@ function pull-env {
             Move-Item -LiteralPath $tmp -Destination $target -Force -ErrorAction Stop
             Write-Host "  render $rel <- $project/$config" -ForegroundColor Cyan
         } catch {
+            if ($RepoPath) { throw 'Environment write failed; existing file preserved.' }
             Write-Host "  WARN  $rel — write failed ($($_.Exception.Message)); existing file left untouched" -ForegroundColor Red
         } finally {
             if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
         }
     }
 
-    Sync-GSADUsNpmAuth
+    if (-not $RepoPath) { Sync-GSADUsNpmAuth }
+}
+
+function init-worktree {
+    [CmdletBinding()]
+    param([string]$Path = (Get-Location).Path)
+    & (Join-Path $PSScriptRoot 'Initialize-Worktree.ps1') -Path $Path
+    if ($LASTEXITCODE -ne 0) { throw 'Worktree initialization failed.' }
 }
 
 function Restore-GSADUsNpmAuthEnv {
