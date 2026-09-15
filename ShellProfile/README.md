@@ -35,6 +35,8 @@ never needs editing again.
 | `end-day` | `wip-all` then lock the screen. |
 | `Register-StartupUnwip` / `Unregister-StartupUnwip` | Add/remove the at-logon `unwip-all` scheduled task. |
 | `pull-env` | Render every repo's env file from Doppler (values never echoed). |
+| `pull-env -RepoPath .` | Refresh only this registered checkout's env, including linked worktrees. |
+| `init-worktree` | Initialize this linked worktree's missing env and npm dependencies. |
 | `sentry-probe` | Read-only Sentry issues/events for any project in the org — see `..\Sentry\README.md`. |
 
 ## Sync model
@@ -45,3 +47,68 @@ ref, so a force-push can never clobber the other machine. `unwip` fast-forwards
 `main` then adopts the newest *other* machine's `wip/*` branch as uncommitted
 changes. The autostash is only dropped after its content is confirmed already
 safe on this machine's own `wip/<host>` ref, so local work is never lost.
+
+## Agent worktrees (Claude and Codex)
+
+Install once after updating Tools locally:
+
+```powershell
+pwsh -NoProfile -File C:\GSADUs\Tools\ShellProfile\Install-WorktreeSetup.ps1
+```
+
+This installs a small `post-checkout` hook in the shared `.git/hooks` of WebApp,
+PM, WebCatalog and PNGTools. Both harnesses' ordinary `git worktree add` calls
+run it automatically on the initial checkout. No repo-local `.codex` directory,
+global `core.hooksPath`, harness hook trust change, or sandbox relaxation is needed.
+Existing unrelated hooks and configured hook paths cause the installer to refuse
+replacement. Reinstallation is idempotent; `-Uninstall` removes only managed hooks.
+
+The hook resolves the main repo through Git's common directory, so worktree names
+and locations do not matter. It uses the existing Doppler render table and authenticated
+Windows user. It renders a missing env directly from Doppler and runs `npm ci` when a
+root `package-lock.json` exists and `node_modules` is missing. Each worktree gets its own
+dependencies. It neither copies secrets nor links the main checkout's dependencies.
+Env writes must be gitignored and untracked; failed downloads leave existing files intact.
+The existing PowerShell profile restores private npm authentication from the managed
+user `.npmrc`. Enrollment is still `doppler login` and a normal `pull-env` once per machine.
+
+Existing worktrees, env files, dependencies, and ordinary branch switches are left
+alone. For a previously created or `--no-checkout` worktree, run:
+
+```powershell
+init-worktree
+# Explicit refresh after a Doppler change:
+pull-env -RepoPath .
+```
+
+From Git Bash or a shell without the profile:
+
+```sh
+pwsh -NoProfile -File C:/GSADUs/Tools/ShellProfile/Initialize-Worktree.ps1
+```
+
+A setup failure returns nonzero but Git has already created the checkout. Fix the
+reported prerequisite and rerun `init-worktree`. An incomplete managed npm install
+is marked in the worktree's Git metadata and retried; pre-existing dependencies are
+preserved. After changing a lockfile, run `npm ci` yourself in that worktree. Python
+virtual environments are not provisioned by this npm setup.
+
+Git's [post-checkout contract](https://git-scm.com/docs/githooks#_post_checkout)
+includes `git worktree add` unless `--no-checkout` is used. Codex's native
+[local environments](https://learn.chatgpt.com/docs/environments/local-environment)
+require a repo `.codex` folder, which this workspace explicitly disallows. The Git hook
+supplies the shared automatic setup without changing that owner decision.
+
+### Validation commands
+
+```powershell
+pwsh -NoProfile -File C:\GSADUs\Tools\ShellProfile\Test-WorktreeEnvironment.ps1
+pwsh -NoProfile -File C:\GSADUs\Tools\ShellProfile\Test-DisposablePostgres.ps1
+```
+
+The first uses fake data and disposable repositories. The second starts PostgreSQL
+17.11 with no network, published port, host mount or production credentials, checks a
+transaction and rollback, verifies graceful exit 0, and removes only its own container.
+It may download the official PostgreSQL image and leaves that image cached.
+
+The local installation and Docker repair evidence is in [SETUP-VERIFICATION.md](SETUP-VERIFICATION.md).

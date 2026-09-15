@@ -23,7 +23,9 @@ foreach ($repo in $Repos) {
         $old = Get-Content -LiteralPath $target -Raw
         if (-not $old.Contains($marker)) { throw "Existing post-checkout hook for $repo; left untouched." }
         if ($Uninstall) { Remove-Item -LiteralPath $target; continue }
-        if ($old.Trim() -eq $hook.Trim()) { Write-Host "Already installed: $repo"; continue }
+        if ($old.Replace("`r`n", "`n").Trim() -eq $hook.Replace("`r`n", "`n").Trim()) {
+            Write-Host "Already installed: $repo"; continue
+        }
         Copy-Item -LiteralPath $target -Destination "$target.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
     }
     if (-not $Uninstall) {
