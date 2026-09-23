@@ -1,5 +1,12 @@
 # Direct Vercel deployment waiting
 
+**Automatic since 2026-09-23:** a user-level Claude Code `PostToolUse` hook
+(`C:/GSADUs/.claude/hooks/vercel-deploy/watch.mjs`, `asyncRewake`) runs this waiter after any
+`git push` of `main` in WebApp or PM (worktrees included) and wakes the agent with the result,
+so nobody has to remember it. One watcher per commit (a lock in the temp dir). Install or
+repair on a machine: `node C:/GSADUs/.claude/hooks/vercel-deploy/install.mjs --apply`. The
+manual form below stays for other harnesses and previews.
+
 For both harnesses, after an **authorized** Git push, run from the checkout that
 was pushed (including a worktree):
 
