@@ -37,8 +37,14 @@ $GSADUsRetiredRepos = @(
     'SiteCheck'                     # retired 2026-08-06, GitHub repo DELETED 2026-08-11 (no remote); module ships from WebApp
 )
 
+# GitHub owners whose repos belong to this workspace. BOTH are the owner's: the
+# personal account holds most repos, the org holds the shared npm packages
+# (Shared -> gsadus/gsadus-shared, declared that way in setup.ps1). A repo whose
+# origin owner is not on this list is a third-party fork and stays out of wip/unwip.
+$GSADUsRepoOwners = @('Vadim-GSADUs', 'gsadus')
+
 function Get-WipRepos {
-    # Only include repos whose origin points at Vadim-GSADUs (skips third-party forks)
+    # Only include repos whose origin OWNER is one of $GSADUsRepoOwners.
     $retired = $GSADUsRetiredRepos | ForEach-Object { Join-Path $GSADUsRoot $_ }
     $candidates = @()
     if (Test-Path "$GSADUsRoot\.git") { $candidates += $GSADUsRoot }
@@ -53,7 +59,11 @@ function Get-WipRepos {
         if ($retired -contains $c) { continue }
         Push-Location $c
         $url = git remote get-url origin 2>$null
-        if ($url -match "Vadim-GSADUs") { $repos += $c }
+        # Match the OWNER path segment, never a bare substring: 'gsadus' occurs in
+        # nearly every repo NAME too (gsadus-pm, gsadus-vault), so a substring test
+        # would sweep in any third-party fork of one. Handles both remote forms:
+        # git@github.com:<owner>/<repo>.git and https://github.com/<owner>/<repo>.git
+        if (($url -match 'github\.com[:/]([^/]+)/') -and ($GSADUsRepoOwners -contains $Matches[1])) { $repos += $c }
         Pop-Location
     }
     $repos
