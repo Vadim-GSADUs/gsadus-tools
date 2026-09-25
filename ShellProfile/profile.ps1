@@ -783,6 +783,17 @@ function sentry-probe {
     # GET-only by construction; token read from Doppler webapp/dev at call time.
     node "$GSADUsRoot\Tools\Sentry\sentry-probe.mjs" @args
 }
+
+function helpdesk {
+    # Staff helpdesk tickets (HD-n) as the scoped helpdesk_agent role (Tools\Helpdesk\README.md).
+    # DSN read from Doppler core/prd at call time; dependencies installed on first use.
+    $dir = "$GSADUsRoot\Tools\Helpdesk"
+    if (-not (Test-Path "$dir\node_modules\pg")) {
+        npm ci --prefix $dir --no-audit --no-fund --silent
+        if ($LASTEXITCODE -ne 0) { throw "helpdesk: npm ci failed in $dir" }
+    }
+    node "$dir\helpdesk.mjs" @args
+}
 # -- Google Workspace CLI login (gws) ------------------------------------------
 # gws-login: ONE grant for everything gws can drive as vadim@ (read + write),
 # so the daily gsadus.com reauth is never repeated for "one more scope".

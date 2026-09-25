@@ -1,0 +1,15 @@
+{
+  "name": "gsadus-helpdesk",
+  "private": true,
+  "description": "Owner-side command for GSADUs staff helpdesk tickets (HD-n) in the shared Supabase project",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  }
+}
