@@ -158,14 +158,21 @@ The retired Darkroom local Supabase stack restarted with every Docker start. Rem
 - the named volumes `supabase_db_Darkroom` and `supabase_storage_Darkroom`
 - `supabase_network_Darkroom`
 
-Its 12 images were removed too. Kept:
+Its 12 images were removed too. Two more groups were traced and then removed with the
+owner's approval:
 
-- `postgres:17.11`, the test image
-- three `public.ecr.aws/supabase/*` images the Darkroom containers did not use:
-  `imgproxy:v3.8.0`, `realtime:v2.80.12` and `storage-api:v1.48.21`
-- the 14 anonymous volumes (942 MB) that no Darkroom container used
+- **Three more Darkroom images:** `imgproxy:v3.8.0`, `realtime:v2.80.12` and
+  `storage-api:v1.48.21`, about 2.2 GB. The Supabase CLI pulled them in the Darkroom
+  repo on 4/6–4/7; the last two came with its CLI upgrade to v2.84.2
+  (`supabase/.temp/cli-latest`). No container ever used them.
+- **14 anonymous volumes, 942 MB.** Each was the data directory of an agent's throwaway
+  `docker run … postgres:17.11` test database, created 9/15–9/17 for the PM/WebApp spine
+  slices and the WebCatalog 0096 rehearsal. All held test data only. The agents removed
+  the containers with a plain `docker rm`, which leaves the image's anonymous volume
+  behind. The machine-level instructions now require `docker run --rm` or `docker rm -v`
+  for throwaway containers.
 
-Nothing was pruned.
+Only `postgres:17.11`, the test image, remains. Nothing was pruned.
 
 ### Verification (2026-09-25, Docker Desktop 4.67.0)
 
