@@ -111,4 +111,15 @@ The first uses fake data and disposable repositories. The second starts PostgreS
 transaction and rollback, verifies graceful exit 0, and removes only its own container.
 It may download the official PostgreSQL image and leaves that image cached.
 
+### Docker Desktop
+
+Start Docker Desktop only with the helper, and stop it with `docker desktop stop`. A
+Docker started from an agent shell runs inside the Claude or Codex app and breaks its
+next start ([SETUP-VERIFICATION.md](SETUP-VERIFICATION.md) → Docker repair). The
+helper launches Docker through Explorer and waits for the engine:
+
+```powershell
+pwsh -NoProfile -File C:\GSADUs\Tools\ShellProfile\Start-DockerDesktop.ps1
+```
+
 The local installation and Docker repair evidence is in [SETUP-VERIFICATION.md](SETUP-VERIFICATION.md).
