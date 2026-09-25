@@ -29,6 +29,21 @@ function does this for you.
 - TLS to the Supabase pooler is verified against `supabase-root-ca-2021.pem`. That is the same
   public root PM pins in `PM/lib/supabase-ca.ts`, and it expires 2031-04-26.
 
+## Chat thread
+
+Every change a reporter should see is posted to the ticket's thread in the **Tech Requests**
+Google Chat space (`chat.mjs`), as the **GSADUs staff** bot: PM's Chat app, authenticated as
+the `pm-chat-app@` service account with the `chat.bot` scope.
+- One thread per ticket, keyed `HD-<n>`. The first post opens it with the ticket card, and
+  `chat_thread` records its name.
+- Triage notes, fix summaries and `comment` stay in the history; they're written for the owner.
+  `reply <n> <text>` is the way to talk to the reporter.
+- Screenshots are never posted.
+- The key (`GOOGLE_CHAT_APP_SA_JSON`) and the space (`HELPDESK_CHAT_SPACE`) come from Doppler
+  `core/prd` at call time, like the DSN.
+- The database change is the record. If its post fails, the command says so and exits 3;
+  `HELPDESK_CHAT=off` skips posting.
+
 ## What the database enforces, and what this command adds
 
 The database enforces:
@@ -78,3 +93,5 @@ docker stop helpdesk-cli-pg
 - It applies the migration from the WebCatalog checkout next to this repo.
 - It answers the confirmation window through `HELPDESK_TEST_CONFIRM`, which only works against
   a loopback database.
+- Its Chat test serves a stand-in for Google's token and Chat endpoints on loopback. A loopback
+  database never posts anywhere else, so the tests can't reach the real space.

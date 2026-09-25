@@ -852,6 +852,10 @@ $GSADUsGwsScopes = @(
     # Chat (spaces, members, MESSAGES, admin enumeration, user state)
     'https://www.googleapis.com/auth/chat.spaces'
     'https://www.googleapis.com/auth/chat.memberships'
+    # chat.memberships does NOT cover adding the project's Chat app to a space
+    # (members.create with users/app 403s without this one; added 2026-09-25 for
+    # the helpdesk "Tech Requests" space).
+    'https://www.googleapis.com/auth/chat.memberships.app'
     'https://www.googleapis.com/auth/chat.messages'
     'https://www.googleapis.com/auth/chat.admin.spaces'
     'https://www.googleapis.com/auth/chat.admin.memberships'

@@ -14,6 +14,10 @@
 // time from Doppler (core/prd), the one place it lives. TLS to the Supabase pooler is
 // verified against the bundled Supabase root CA, the same pin PM uses.
 //
+// Every change a reporter should see is then posted to the ticket's thread in the "Tech
+// Requests" Chat space as the GSADUs staff bot (chat.mjs). The database change is the record:
+// a failed post is reported but never undoes it.
+//
 // Usage (node >= 20, any cwd):  node C:/GSADUs/Tools/Helpdesk/helpdesk.mjs <command> ...
 // or the `helpdesk` shell-profile function. `helpdesk help` lists the commands.
 import { spawnSync } from 'node:child_process';
@@ -21,6 +25,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chatConfig, openingText, postToThread, say } from './chat.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CA_FILE = path.join(HERE, 'supabase-root-ca-2021.pem');
@@ -255,6 +260,30 @@ function readScreenshot(file) {
   return { type, data, name: path.basename(file) };
 }
 
+// -- Chat thread ------------------------------------------------------------------------------
+// Opens the thread first if the ticket has none yet (filed here, or PM's post failed), then
+// records the thread name the first time it is known.
+async function postUpdate(c, cfg, n, actor, text) {
+  const t = await load(c, n);
+  let thread = t.chat_thread;
+  if (!thread) thread = await postToThread(cfg, n, openingText(t));
+  if (text) thread = (await postToThread(cfg, n, text)) || thread;
+  if (!t.chat_thread && thread) {
+    await tx(c, actor, () => c.query(
+      'update helpdesk.ticket set chat_thread = $2 where number = $1 and chat_thread is null', [n, thread]));
+  }
+}
+
+async function announce(c, url, { n, actor, text }) {
+  try {
+    const cfg = chatConfig(process.env, isLoopback(url));
+    if (cfg) await postUpdate(c, cfg, n, actor, text);
+  } catch (e) {
+    console.error(`${hd(n)}: the change is saved, but posting it to the Chat thread failed (${oneLine(e.message, 160)})`);
+    process.exitCode = 3;
+  }
+}
+
 // -- Commands ---------------------------------------------------------------------------------
 async function statusLine(c) {
   const { rows } = await c.query(
@@ -388,6 +417,7 @@ async function cmdFile(c, flags, actor) {
     return number;
   });
   console.log(`${hd(n)} filed (${product}/${category}, ${severity})${shots.length ? ` with ${shots.length} screenshot(s)` : ''}`);
+  return { n, actor, text: null };
 }
 
 async function cmdTriage(c, flags, n, actor) {
@@ -396,14 +426,16 @@ async function cmdTriage(c, flags, n, actor) {
   if (one(flags, 'product')) corrections.product = oneOf(one(flags, 'product'), PRODUCTS, 'product');
   if (one(flags, 'category')) corrections.category = oneOf(one(flags, 'category'), CATEGORIES, 'category');
   if (one(flags, 'severity')) corrections.severity = oneOf(one(flags, 'severity'), SEVERITIES, 'severity');
-  await tx(c, actor, async () => {
+  const moved = await tx(c, actor, async () => {
     const t = await load(c, n);
     if (t.status === 'triaged') await update(c, n, { triage_note: note, ...corrections });
     // queued → triaged: the QUEUE item was demoted to parkinglot at a handoff close.
     else await transition(c, n, ['new', 'needs_info', 'reopened', 'queued'], 'triaged', { triage_note: note, ...corrections });
     await addEvent(c, n, actor, 'triage', note);
+    return t.status !== 'triaged';
   });
   console.log(`${hd(n)} triaged`);
+  return moved ? { n, actor, text: say.triaged() } : null;
 }
 
 async function cmdAsk(c, flags, n, actor) {
@@ -415,6 +447,7 @@ async function cmdAsk(c, flags, n, actor) {
     await addEvent(c, n, actor, 'comment', `Question for the reporter: ${question}`);
   });
   console.log(`${hd(n)} needs info from the reporter`);
+  return { n, actor, text: say.asked(question) };
 }
 
 const OWNER_DECIDES = ['new', 'triaged', 'needs_info', 'reopened'];
@@ -442,6 +475,7 @@ async function cmdApprove(c, flags, n, url) {
     if (note) await addEvent(c, n, owner, 'comment', note);
   });
   console.log(`${hd(n)} approved for ${to}`);
+  return { n, actor: owner, text: t.status === 'approved' ? say.reassigned(to) : say.approved(to) };
 }
 
 async function cmdReject(c, flags, n, url) {
@@ -452,6 +486,7 @@ async function cmdReject(c, flags, n, url) {
   const owner = `owner@${os.hostname().toLowerCase()}`;
   await tx(c, owner, () => transition(c, n, [t.status], 'rejected', { resolution: reason }));
   console.log(`${hd(n)} rejected`);
+  return { n, actor: owner, text: say.rejected(reason) };
 }
 
 async function cmdDup(c, flags, n, actor) {
@@ -463,6 +498,7 @@ async function cmdDup(c, flags, n, actor) {
     await addEvent(c, n, actor, 'comment', `Duplicate of ${hd(of)}.`);
   });
   console.log(`${hd(n)} marked duplicate of ${hd(of)}`);
+  return { n, actor, text: say.duplicate(of) };
 }
 
 async function cmdPark(c, flags, n, actor) {
@@ -476,6 +512,7 @@ async function cmdPark(c, flags, n, actor) {
     if (note) await addEvent(c, n, actor, 'comment', note);
   });
   console.log(`${hd(n)} parked in ${ref}`);
+  return { n, actor, text: say.queued(ref) };
 }
 
 async function cmdClaim(c, n, actor) {
@@ -495,6 +532,7 @@ async function cmdClaim(c, n, actor) {
     }
   });
   console.log(`${hd(n)} claimed by ${actor}`);
+  return { n, actor, text: say.claimed(harnessOf(actor)) };
 }
 
 async function cmdRelease(c, flags, n, actor) {
@@ -504,6 +542,7 @@ async function cmdRelease(c, flags, n, actor) {
     if (one(flags, 'note')) await addEvent(c, n, actor, 'comment', one(flags, 'note'));
   });
   console.log(`${hd(n)} released back to approved`);
+  return { n, actor, text: say.released() };
 }
 
 // Review sent it back: fix_ready → in_progress, the same claim continues.
@@ -515,6 +554,7 @@ async function cmdRework(c, flags, n, actor) {
     await addEvent(c, n, actor, 'comment', note);
   });
   console.log(`${hd(n)} back in progress`);
+  return { n, actor, text: say.rework() };
 }
 
 async function cmdFixReady(c, flags, n, actor) {
@@ -526,6 +566,7 @@ async function cmdFixReady(c, flags, n, actor) {
     await addLinks(c, n, actor, linksFrom(flags));
   });
   console.log(`${hd(n)} fix ready for review`);
+  return { n, actor, text: say.fixReady() };
 }
 
 async function cmdResolve(c, flags, n, actor) {
@@ -537,6 +578,7 @@ async function cmdResolve(c, flags, n, actor) {
     await addLinks(c, n, actor, linksFrom(flags));
   });
   console.log(`${hd(n)} resolved`);
+  return { n, actor, text: say.resolved(resolution) };
 }
 
 async function cmdReopen(c, flags, n, actor) {
@@ -546,6 +588,7 @@ async function cmdReopen(c, flags, n, actor) {
     await addEvent(c, n, actor, 'comment', note);
   });
   console.log(`${hd(n)} reopened`);
+  return { n, actor, text: say.reopened(note) };
 }
 
 async function cmdComment(c, flags, positional, n, actor) {
@@ -553,6 +596,19 @@ async function cmdComment(c, flags, positional, n, actor) {
   if (!String(body).trim()) throw new UsageError('comment text is required');
   await tx(c, actor, async () => { await load(c, n); await addEvent(c, n, actor, 'comment', String(body)); });
   console.log(`${hd(n)} comment added`);
+}
+
+// A message to the reporter and staff in the ticket's thread, posted as the bot. Unlike the
+// status lines, the post is the point, so it must succeed before the history records it.
+async function cmdReply(c, flags, positional, n, actor, url) {
+  const text = String(one(flags, 'body') ?? positional.slice(1).join(' ')).trim();
+  if (!text) throw new UsageError('reply text is required');
+  await load(c, n);
+  const cfg = chatConfig(process.env, isLoopback(url));
+  if (!cfg) throw new UsageError('Chat posting is off (HELPDESK_CHAT=off, or a test database without Chat settings)');
+  await postUpdate(c, cfg, n, actor, say.reply(harnessOf(actor), text));
+  await tx(c, actor, () => addEvent(c, n, actor, 'comment', `Posted to the Chat thread: ${text}`));
+  console.log(`${hd(n)} reply posted to the Chat thread`);
 }
 
 async function cmdLink(c, flags, n, actor) {
@@ -584,8 +640,12 @@ Triage and work (--as claude:<AgentName> | codex:<AgentName> | owner is required
   rework <n> --note text           review sent it back (fix_ready → in_progress)
   resolve <n> --resolution text [--commit sha] [--pr ref]
   reopen <n> --note text
-  comment <n> <text>
+  comment <n> <text>               history only (for the owner and agents)
+  reply <n> <text>                 posted to the ticket's Chat thread as the bot, and recorded
   link <n> --kind pr|commit|queue|other --ref ref
+
+Chat: every change a reporter should see is posted to the ticket's thread in the Tech Requests
+space. Exit code 3 means the change is saved but that post failed. HELPDESK_CHAT=off skips posts.
 
 Filing (on a reporter's behalf; also needs --as)
   file --reporter name@gsadus.com --product ${PRODUCTS.join('|')}
@@ -618,13 +678,17 @@ export async function main(argv) {
     resolve: (c) => cmdResolve(c, flags, parseTicket(positional[0]), actorFrom(flags)),
     reopen: (c) => cmdReopen(c, flags, parseTicket(positional[0]), actorFrom(flags)),
     comment: (c) => cmdComment(c, flags, positional, parseTicket(positional[0]), actorFrom(flags)),
+    reply: (c, url) => cmdReply(c, flags, positional, parseTicket(positional[0]), actorFrom(flags), url),
     link: (c) => cmdLink(c, flags, parseTicket(positional[0]), actorFrom(flags)),
   };
   const handler = handlers[command];
   if (!handler) throw new UsageError(`unknown command ${command}; see \`helpdesk help\``);
   const url = resolveDsn();
   const client = await connect(url);
-  try { await handler(client, url); } finally { await client.end().catch(() => {}); }
+  try {
+    const news = await handler(client, url);
+    if (news) await announce(client, url, news);
+  } finally { await client.end().catch(() => {}); }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
