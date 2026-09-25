@@ -1,5 +1,5 @@
 // Tests for the helpdesk command. Unit tests always run. Integration tests drive the real CLI
-// against a disposable PostgreSQL that has WebCatalog migration 0113 applied, and skip unless
+// against a disposable PostgreSQL that has the WebCatalog helpdesk migrations applied, and skip unless
 // HELPDESK_TEST_ADMIN_URL names that fixture:
 //   docker run -d --rm --name helpdesk-cli-pg -e POSTGRES_HOST_AUTH_METHOD=trust \
 //       -e POSTGRES_DB=helpdesk_cli_test -p 127.0.0.1:55444:5432 postgres:17.11
@@ -21,7 +21,9 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, 'helpdesk.mjs');
-const MIGRATION = path.resolve(HERE, '../../WebCatalog/pipeline/supabase/migrations/0113_helpdesk_init.sql');
+// Every helpdesk migration (0113 onward), in order; HELPDESK_MIGRATIONS points elsewhere, e.g. a worktree.
+const MIGRATIONS_DIR = process.env.HELPDESK_MIGRATIONS
+  || path.resolve(HERE, '../../WebCatalog/pipeline/supabase/migrations');
 const HOST = os.hostname().toLowerCase();
 
 describe('unit', () => {
@@ -113,7 +115,9 @@ describe('integration (disposable PostgreSQL)', { skip: !ADMIN && 'HELPDESK_TEST
       if exists (select 1 from pg_roles where rolname = 'helpdesk_agent') then
         execute 'drop owned by helpdesk_agent'; execute 'drop role helpdesk_agent';
       end if; end $$`);
-    await admin.query(fs.readFileSync(MIGRATION, 'utf8'));
+    const migrations = fs.readdirSync(MIGRATIONS_DIR).filter((f) => /^\d{4}_helpdesk_.*\.sql$/.test(f)).sort();
+    assert.ok(migrations.includes('0113_helpdesk_init.sql'), `no 0113 in ${MIGRATIONS_DIR}`);
+    for (const f of migrations) await admin.query(fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8'));
     // What provision_service_roles.py does for this role (--read-only-schemas helpdesk).
     await admin.query(`alter role helpdesk_agent with login bypassrls password 'fixture-only';
       grant select on all tables in schema helpdesk to helpdesk_agent`);
@@ -173,8 +177,10 @@ describe('integration (disposable PostgreSQL)', { skip: !ADMIN && 'HELPDESK_TEST
   test('changes need an identity; bad input is refused before the database', () => {
     const n = file();
     assert.match(run(['triage', String(n), '--note', 'x']).err, /--as is required/);
-    assert.match(run(['file', '--as', 'owner', '--reporter', 'a@gsadus.com', '--product', 'crm', '--category', 'broken',
-      '--severity', 'annoying', '--note', 'x']).err, /--product must be one of/);
+    for (const product of ['crm', 'pyrevit']) {
+      assert.match(run(['file', '--as', 'owner', '--reporter', 'a@gsadus.com', '--product', product, '--category', 'broken',
+        '--severity', 'annoying', '--note', 'x']).err, /--product must be one of webapp \| pm \| it/);
+    }
     const bogus = path.join(os.tmpdir(), `helpdesk-test-${process.pid}.txt`);
     fs.writeFileSync(bogus, 'not an image');
     assert.match(run(['file', '--as', 'owner', '--reporter', 'a@gsadus.com', '--product', 'pm', '--category', 'idea',

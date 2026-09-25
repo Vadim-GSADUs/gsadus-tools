@@ -90,7 +90,8 @@ docker stop helpdesk-cli-pg
 ```
 
 - The integration suite refuses any target other than that fixture.
-- It applies the migration from the WebCatalog checkout next to this repo.
+- It applies every helpdesk migration (`0113` onward) from the WebCatalog checkout next to
+  this repo; `HELPDESK_MIGRATIONS` points it at another folder, such as a worktree.
 - It answers the confirmation window through `HELPDESK_TEST_CONFIRM`, which only works against
   a loopback database.
 - Its Chat test serves a stand-in for Google's token and Chat endpoints on loopback. A loopback

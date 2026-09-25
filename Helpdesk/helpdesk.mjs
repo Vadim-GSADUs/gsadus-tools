@@ -37,7 +37,8 @@ const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 // pg-connection-string turns these into an `ssl` object that would replace the verifying one.
 const DSN_SSL_KEYS = ['ssl', 'sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'sslnegotiation'];
 
-export const PRODUCTS = ['webapp', 'pm', 'pngtools', 'pyrevit', 'studio', 'it', 'other'];
+// The two apps staff share, plus IT and account requests (owner 2026-09-25; WebCatalog 0115).
+export const PRODUCTS = ['webapp', 'pm', 'it'];
 export const CATEGORIES = ['broken', 'confusing', 'idea', 'access'];
 export const SEVERITIES = ['blocking', 'annoying', 'nice-to-have'];
 export const ASSIGNEES = ['claude', 'codex', 'owner'];
