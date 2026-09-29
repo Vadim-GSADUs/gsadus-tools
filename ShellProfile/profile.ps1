@@ -10,7 +10,9 @@
 #     normally, never forced.
 #   * Each machine snapshots its in-progress working tree to its OWN remote
 #     branch:  wip/<hostname>.  Only that machine writes that ref, so a
-#     force-push can never clobber another machine's work.
+#     force-push can never clobber another machine's work. A 'wip' on a clean
+#     tree deletes the ref: an old snapshot of since-committed work must not
+#     arrive on the other machine as "incoming".
 #   * 'unwip' fast-forwards the real branch, then adopts the NEWEST wip/* branch
 #     belonging to a DIFFERENT machine as uncommitted changes.
 #   * The autostash is only discarded after we confirm its content is already
@@ -22,6 +24,10 @@
 $GSADUsRoot     = "C:\GSADUs"
 $GSADUsProfile  = "$GSADUsRoot\Tools\ShellProfile\profile.ps1"   # canonical path of this file
 $GSADUsWipConflictReport = "$GSADUsRoot\.wip-conflict.md"
+# The exact rerun command the conflict agent is pre-approved for. Its PowerShell
+# tool loads no profile, so it dot-sources this file first. The report and the
+# agent's allow rule both use this string; an allow rule matches only verbatim.
+$GSADUsWipRerunCommand = ". '$GSADUsProfile'; unwip-all"
 
 function Get-WipHost {
     # Stable, ref-safe machine id: lowercase computer name, non-alphanumerics -> '-'
@@ -37,8 +43,14 @@ $GSADUsRetiredRepos = @(
     'SiteCheck'                     # retired 2026-08-06, GitHub repo DELETED 2026-08-11 (no remote); module ships from WebApp
 )
 
+# GitHub owners whose repos belong to this workspace. BOTH are the owner's: the
+# personal account holds most repos, the org holds the shared npm packages
+# (Shared -> gsadus/gsadus-shared, declared that way in setup.ps1). A repo whose
+# origin owner is not on this list is a third-party fork and stays out of wip/unwip.
+$GSADUsRepoOwners = @('Vadim-GSADUs', 'gsadus')
+
 function Get-WipRepos {
-    # Only include repos whose origin points at Vadim-GSADUs (skips third-party forks)
+    # Only include repos whose origin OWNER is one of $GSADUsRepoOwners.
     $retired = $GSADUsRetiredRepos | ForEach-Object { Join-Path $GSADUsRoot $_ }
     $candidates = @()
     if (Test-Path "$GSADUsRoot\.git") { $candidates += $GSADUsRoot }
@@ -53,7 +65,11 @@ function Get-WipRepos {
         if ($retired -contains $c) { continue }
         Push-Location $c
         $url = git remote get-url origin 2>$null
-        if ($url -match "Vadim-GSADUs") { $repos += $c }
+        # Match the OWNER path segment, never a bare substring: 'gsadus' occurs in
+        # nearly every repo NAME too (gsadus-pm, gsadus-vault), so a substring test
+        # would sweep in any third-party fork of one. Handles both remote forms:
+        # git@github.com:<owner>/<repo>.git and https://github.com/<owner>/<repo>.git
+        if (($url -match 'github\.com[:/]([^/]+)/') -and ($GSADUsRepoOwners -contains $Matches[1])) { $repos += $c }
         Pop-Location
     }
     $repos
@@ -76,8 +92,7 @@ function Write-WipConflictReport {
         [string]$IncomingRef,
         [string]$IncomingSha,
         [string]$LastApplied,
-        [string[]]$ConflictedFiles = @(),
-        [string[]]$IncomingFiles = @()
+        [string[]]$ConflictedFiles = @()
     )
 
     $repoPath = (Get-Location).Path
@@ -85,6 +100,23 @@ function Write-WipConflictReport {
     $head = git rev-parse HEAD 2>$null
     $status = @(git status --short 2>$null)
     $when = Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"
+    $autostash = @(git stash list 2>$null | Where-Object { $_ -match 'unwip-autostash' })
+
+    # A wip snapshot is ONE commit on top of the other machine's branch tip at
+    # snapshot time; its parent is the base. The incoming WORK is base..snapshot.
+    # HEAD..snapshot is the wrong view: it also shows every commit landed on the
+    # branch since the base, reversed — an agent reading it "restores" old lines
+    # and undoes newer work. The commits since the base are the evidence that
+    # usually explains the conflict (the same work, committed after the snapshot).
+    $base = $null; $snapshotTime = $null; $incomingFiles = @(); $landed = @()
+    if ($IncomingSha) {
+        $base = git rev-parse --verify --quiet "$IncomingSha^" 2>$null
+        $snapshotTime = git log -1 --format=%ci $IncomingSha 2>$null
+    }
+    if ($base) {
+        $incomingFiles = @(git diff --name-status $base $IncomingSha 2>$null)
+        $landed = @(git log --format='%h %ci %s' "$base..HEAD" 2>$null)
+    }
 
     $lines = @()
     $firstReportThisRun = -not $global:GSADUsWipConflictReportStarted
@@ -96,6 +128,8 @@ function Write-WipConflictReport {
         $lines += 'If this file exists, the last `unwip`/`unwip-all` run found a conflict that needs an agent to reconcile.'
         $lines += 'Do not ask the human to manage this. Resolve the repo state, update `wip.lastApplied` when the incoming wip has been accounted for, then rerun `unwip-all`.'
         $lines += ""
+        $lines += '**How to read an incoming wip.** It is ONE snapshot commit on top of the other machine''s branch at snapshot time; its parent is the *base* listed below. The incoming work is `git diff <base> <snapshot>`. Never judge it from `git diff HEAD..<wip ref>`: that also shows every commit landed on the branch since the base, reversed, and "restoring" those lines undoes newer work. The usual cause of a conflict is that the same work was committed (or merged in a PR) after the snapshot was taken, so the wip is an older draft of what the branch already holds.'
+        $lines += ""
         $global:GSADUsWipConflictReportStarted = $true
     }
 
@@ -105,10 +139,12 @@ function Write-WipConflictReport {
     $lines += ('- Branch: `{0}`' -f $branch)
     $lines += ('- HEAD: `{0}`' -f $head)
     if ($IncomingRef) { $lines += ('- Incoming wip: `{0}`' -f $IncomingRef) }
-    if ($IncomingSha) { $lines += ('- Incoming SHA: `{0}`' -f $IncomingSha) }
+    if ($IncomingSha) { $lines += ('- Incoming SHA: `{0}` (snapshot taken {1})' -f $IncomingSha, $snapshotTime) }
+    if ($base) { $lines += ('- Incoming wip base: `{0}`' -f $base) }
     if ($LastApplied) { $lines += ('- Previous `wip.lastApplied`: `{0}`' -f $LastApplied) }
     else { $lines += '- Previous `wip.lastApplied`: `(none)`' }
     $lines += "- Reason: $Reason"
+    if ($autostash.Count -gt 0) { $lines += ('- This machine''s local edits are held in: `{0}`' -f ($autostash -join '`, `')) }
     $lines += ""
 
     if ($ConflictedFiles.Count -gt 0) {
@@ -118,12 +154,25 @@ function Write-WipConflictReport {
         $lines += ""
     }
 
-    if ($IncomingFiles.Count -gt 0) {
-        $lines += "### Incoming wip file changes"
+    if ($incomingFiles.Count -gt 0) {
+        $lines += "### The incoming wip's own changes (base..snapshot)"
         $lines += ""
         $lines += '```text'
-        $lines += $IncomingFiles
+        $lines += $incomingFiles
         $lines += '```'
+        $lines += ""
+    }
+
+    if ($base) {
+        $lines += "### Commits on '$branch' since the wip base"
+        $lines += ""
+        if ($landed.Count -gt 0) {
+            $lines += '```text'
+            $lines += $landed
+            $lines += '```'
+        } else {
+            $lines += '(none - the snapshot base is the current tip)'
+        }
         $lines += ""
     }
 
@@ -136,16 +185,39 @@ function Write-WipConflictReport {
         $lines += ""
     }
 
+    $git = 'git -C "{0}"' -f $repoPath
     $lines += "### Agent resolution checklist"
     $lines += ""
-    $lines += "1. Inspect the repo and incoming wip:"
-    $lines += ('   - `git -C "{0}" status --short --branch`' -f $repoPath)
-    if ($IncomingRef) { $lines += ('   - `git -C "{0}" diff HEAD..{1}`' -f $repoPath, $IncomingRef) }
-    $lines += "2. If the incoming wip content is already represented on the current branch, do not edit files just to satisfy the merge."
-    $lines += "3. If real incoming work is missing, apply it intentionally and keep only the root-cause/current path."
-    if ($IncomingSha) { $lines += ('4. After the incoming wip has been accounted for, mark it applied: `git -C "{0}" config --local wip.lastApplied {1}`' -f $repoPath, $IncomingSha) }
-    else { $lines += '4. After the incoming wip has been accounted for, mark the exact incoming SHA as applied with `git config --local wip.lastApplied <sha>`.' }
-    $lines += '5. Rerun `unwip-all`. Resolution is complete only when it reports no warnings and this file is removed automatically.'
+    $n = 1
+    if ($base) {
+        $lines += "$n. Gather the evidence (read-only):"
+        $lines += ('   - `{0} diff {1} {2}` - the incoming work, per hunk' -f $git, $base, $IncomingSha)
+        $lines += ('   - `{0} log -p {1}..HEAD -- <conflicted file>` - what landed on those lines after the snapshot' -f $git, $base)
+        $lines += ('   - `{0} diff {1} HEAD -- <file>` - the incoming snapshot vs the current branch, one file at a time' -f $git, $IncomingSha)
+        $lines += ('   - GitHub, from inside the repo: `gh pr list --state all --limit 15 --json number,title,state,mergedAt,headRefName`, then `gh pr view <n> --json files,commits` / `gh pr diff <n>` for any PR touching these files. Many repos commit straight to the branch and have no PRs; the commit log above is then the whole story.')
+        $n++
+        $lines += "$n. Classify every incoming hunk, conflicted files first:"
+        $lines += '   - **Superseded** - the change, or a later revision of it, is already on the branch. Keep the branch.'
+        $lines += '   - **Missing** - real work absent from the branch and not reworked by any later commit. Apply it on top of the current version.'
+        $lines += '   - **Contradicted** - a commit after the snapshot deliberately changed the same thing another way. Keep the branch: the later intent wins.'
+        $n++
+        $lines += "$n. If nothing is Missing, edit nothing. Otherwise apply only the Missing hunks to the working tree as UNCOMMITTED changes (what a clean unwip produces), keeping only the root-cause/current path (workspace AGENTS.md rule 6). Never commit, push, rebase, reset the branch, or touch the wip branch; no conflict markers may remain."
+        $n++
+    } else {
+        $lines += ('{0}. Inspect: `{1} status --short --branch`, `{1} log --oneline --left-right HEAD...origin/{2}` (local vs remote commits), and `gh pr list --state all --limit 15` from inside the repo.' -f $n, $git, $branch); $n++
+        $lines += "$n. If the local edits are already represented on the current branch, do not edit files just to satisfy the merge; if real work is missing, apply it intentionally and keep only the root-cause/current path."; $n++
+    }
+    if ($autostash.Count -gt 0) {
+        $lines += ('{0}. The `unwip-autostash` entry above holds this machine''s own local edits. Reapply them with `{1} stash apply ''stash@{{0}}''` onto the result, resolving any overlap. Drop the entry only after `{1} diff ''stash@{{0}}'' -- <each stashed path>` shows its content is fully in the tree (quote the stash ref in pwsh).' -f $n, $git)
+        $n++
+    }
+    if ($IncomingSha) { $lines += ('{0}. Mark the incoming wip applied: `{1} config --local wip.lastApplied {2}`' -f $n, $git, $IncomingSha) }
+    else { $lines += ('{0}. If an incoming wip was involved, mark its exact SHA applied: `{1} config --local wip.lastApplied <sha>`' -f $n, $git) }
+    $n++
+    $lines += ('{0}. Rerun the sync with the PowerShell tool, exactly (pre-approved): `{1}`. Resolution is complete only when it reports no warnings and this file is removed automatically.' -f $n, $GSADUsWipRerunCommand)
+    $n++
+    if ($IncomingSha) { $lines += ('{0}. Report per file: its classification, the evidence (commit hashes / PR numbers), and any hunk you did not apply (the snapshot stays readable with `git show {1}`).' -f $n, $IncomingSha) }
+    else { $lines += "$n. Report what you changed and why." }
     $lines += ""
     $lines += "---"
     $lines += ""
@@ -188,16 +260,49 @@ function Invoke-WipConflictAgent {
     try { $ans = Read-Host "    Launch Claude to resolve the conflict now? [Y/n]" }
     catch { return }   # non-interactive host (scheduled/redirected) — skip
     if ($ans -ne '' -and $ans -notmatch '^[Yy]') { return }
+
+    $prompt = ("A GSADUs wip sync conflict was just detected. Read {0} and resolve every repo section in it now by following its 'Agent resolution checklist', without waiting for further instructions. " +
+        "Key point: an incoming wip is one snapshot commit on top of its base, so judge it by base..snapshot against the commits (and any GitHub PRs) that landed on the branch after that base; the usual cause is that the same work was committed after the snapshot, which makes the wip an older draft. " +
+        "Classify each incoming hunk as superseded, missing or contradicted; apply only missing work, as uncommitted changes; never commit, push or rewrite branches. " +
+        "Then set wip.lastApplied, rerun the sync with the exact pre-approved command in the report, and finish with a per-file summary citing the commits or PRs that decided each one.") -f $GSADUsWipConflictReport
+
+    # Pinned setup for the conflict-resolution session (decision 2026-07-14):
+    # Opus 4.8 (not the account default), acceptEdits so file resolution in the
+    # conflicted sub-repos never prompts, git pre-allowed in both shells, read-only
+    # gh PR lookups for the evidence step, and the exact sync rerun.
+    # The prompt MUST come first: --allowedTools is variadic and swallows every
+    # following bare argument, so a trailing prompt became one more "tool name"
+    # and the session opened empty (found 2026-09-28).
+    $claudeArgs = @(
+        $prompt
+        '--model', 'claude-opus-4-8'
+        '--permission-mode', 'acceptEdits'
+        '--name', 'wip-conflict'
+        '--allowedTools'
+        'Edit', 'Write'
+        'Bash(git:*)', 'PowerShell(git:*)'
+        'Bash(gh pr list:*)', 'Bash(gh pr view:*)', 'Bash(gh pr diff:*)'
+        'PowerShell(gh pr list:*)', 'PowerShell(gh pr view:*)', 'PowerShell(gh pr diff:*)'
+        "PowerShell($GSADUsWipRerunCommand)"
+    )
+
+    # Session-scoped environment, restored afterwards: no nested launch offer when
+    # the agent reruns unwip-all, and gh reads as the account that owns the private
+    # workspace repos (the machine's active gh account may be a different one).
+    $saved = @{ GSADUS_WIP_AGENT = $env:GSADUS_WIP_AGENT; GH_TOKEN = $env:GH_TOKEN }
+    $env:GSADUS_WIP_AGENT = '0'
+    if (-not $env:GH_TOKEN -and (Get-Command gh -ErrorAction SilentlyContinue)) {
+        $token = gh auth token --user Vadim-GSADUs 2>$null
+        if ($LASTEXITCODE -eq 0 -and $token) { $env:GH_TOKEN = $token }
+    }
     Push-Location $GSADUsRoot
     try {
-        # Pinned setup for the conflict-resolution session (decision 2026-07-14):
-        # Opus 4.8 (not the account default), acceptEdits so file resolution in the
-        # conflicted sub-repos never prompts, and git pre-allowed in both shells —
-        # the whole checklist is git surgery, so per-command approval is pure noise.
-        claude --model claude-opus-4-8 --permission-mode acceptEdits `
-            --allowedTools "Bash(git:*)" "PowerShell(git:*)" "Edit" "Write" `
-            ("A GSADUs wip sync conflict was just detected. Read {0} and resolve each repo section by following its 'Agent resolution checklist'. Rules: prefer the root-cause/current path (workspace AGENTS.md rule 6); if the incoming wip content is already represented on the current branch, do not edit files just to satisfy the merge; after accounting for incoming work set wip.lastApplied to the incoming SHA; finish by rerunning unwip-all and confirming the report file is removed automatically." -f $GSADUsWipConflictReport)
-    } finally { Pop-Location }
+        claude @claudeArgs
+    } finally {
+        Pop-Location
+        # $null removes a variable that was unset before the launch.
+        foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+    }
 }
 
 # -- core per-repo helpers (operate on the current directory) ------------------
@@ -281,6 +386,24 @@ function Save-RepoWip {
     git add -A
     if (-not (git status --porcelain)) {
         git reset -q
+        $state = if ($pushedReal) { 'commits pushed' } else { 'clean' }
+        # Nothing uncommitted here, so an existing wip/<me> no longer describes
+        # this machine: its work has since been committed (or discarded). Left in
+        # place, the other machine still takes it as new incoming work, fast-
+        # forwards past the commits that absorbed it and cherry-picks the old
+        # draft on top, conflicting wherever those commits reworked its lines
+        # (WebApp, 2026-09-28). Delete it. Exception: a kept unwip-autostash holds
+        # edits that are not in the tree, and wip/<me> may be their remote copy.
+        if (git rev-parse --verify --quiet "refs/remotes/origin/wip/$me" 2>$null) {
+            if (git stash list 2>$null | Where-Object { $_ -match 'unwip-autostash' }) {
+                Write-Host "  skip $Label ($state; wip/$me kept: 'git stash' holds unsynced edits)" -ForegroundColor Yellow
+                return
+            }
+            git push -q origin --delete "wip/$me" 2>$null
+            if ($LASTEXITCODE -eq 0) { Write-Host "  clear $Label ($state; stale wip/$me deleted)" -ForegroundColor Cyan }
+            else { Write-Host "  ERROR $Label could not delete stale wip/$me" -ForegroundColor Red }
+            return
+        }
         if ($pushedReal) { Write-Host "  push $Label (commits)" -ForegroundColor Yellow }
         else { Write-Host "  skip $Label (clean)" -ForegroundColor DarkGray }
         return
@@ -422,13 +545,13 @@ function Restore-RepoWip {
     if ($behind -gt 0) {
         git merge --ff-only -q "origin/$branch" 2>$null
         if ($LASTEXITCODE -ne 0) {
+            if ($stashed) { git stash pop -q 2>$null }
             Write-WipConflictReport `
                 -Label $Label `
                 -Reason "'$branch' diverged from remote during unwip fast-forward" `
                 -LastApplied $last
             Add-WipAttention "$Label — '$branch' diverged from remote; resolve manually"
             Write-Host "  WARN $Label — '$branch' diverged from remote; resolve manually" -ForegroundColor Red
-            if ($stashed) { git stash pop -q 2>$null }
             return
         }
     }
@@ -438,15 +561,6 @@ function Restore-RepoWip {
         git cherry-pick --no-commit $other 2>$null
         if ($LASTEXITCODE -ne 0) {
             $conflictedFiles = @(git diff --name-only --diff-filter=U 2>$null)
-            $incomingFiles = @(git diff --name-status "HEAD..$other" 2>$null)
-            Write-WipConflictReport `
-                -Label $Label `
-                -Reason "incoming wip conflicts with '$branch'" `
-                -IncomingRef $other `
-                -IncomingSha $otherSha `
-                -LastApplied $last `
-                -ConflictedFiles $conflictedFiles `
-                -IncomingFiles $incomingFiles
             # A conflicted '--no-commit' cherry-pick leaves an unmerged index and
             # conflict markers in the worktree; 'cherry-pick --abort' clears the
             # sequencer flag but NOT the half-merged tree. Hard-reset to the
@@ -455,6 +569,15 @@ function Restore-RepoWip {
             # safe in the autostash below — never touched by this reset.
             git cherry-pick --abort 2>$null
             git reset -q --hard HEAD 2>$null
+            # Written AFTER the reset so the report's status is the tree the agent
+            # will actually find (the conflicted list was captured above).
+            Write-WipConflictReport `
+                -Label $Label `
+                -Reason "incoming wip conflicts with '$branch' (tree reset to the branch tip; the conflicted files below were not merged)" `
+                -IncomingRef $other `
+                -IncomingSha $otherSha `
+                -LastApplied $last `
+                -ConflictedFiles $conflictedFiles
             Add-WipAttention "$Label — incoming wip conflicts with '$branch'; resolve manually"
             Write-Host "  WARN $Label — incoming wip conflicts with '$branch'; left unchanged" -ForegroundColor Red
             if ($stashed) { Write-Host "       your local changes are saved in 'git stash'." -ForegroundColor DarkGray }
