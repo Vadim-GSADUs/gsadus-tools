@@ -22,7 +22,8 @@
 //
 // Auth (never printed): EGRESS_PROBE_DB_URL from the environment if set, otherwise
 // SUPABASE_DB_URL read at call time from Doppler core/prd. TLS to the pooler is verified
-// against the Supabase root CA pinned in ..\Helpdesk\.
+// against the Supabase root CA pinned beside this file (supabase-root-ca-2021.pem, expires
+// 2031-04-26).
 //
 // Usage (node >= 20, any cwd; `egress-probe` is the pwsh shell-profile function):
 //   node C:/GSADUs/Tools/Supabase/egress-probe.mjs check  [--max-mb-day 100] [--since latest|<snapshot>] [--min-age-h 1] [--limit 10] [--no-save]
@@ -37,7 +38,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CA_FILE = path.join(HERE, '..', 'Helpdesk', 'supabase-root-ca-2021.pem');
+const CA_FILE = path.join(HERE, 'supabase-root-ca-2021.pem');
 const STATE_FILE = path.join(HERE, '.state', 'snapshots.json');
 const DOPPLER = { project: 'core', config: 'prd', name: 'SUPABASE_DB_URL' };
 const PROJECT = 'gsadus-web-catalog (rfguhdxdrzbqcoiulyuv)';

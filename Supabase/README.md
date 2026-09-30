@@ -83,7 +83,8 @@ counters.
 - **Where the DSN comes from.** `SUPABASE_DB_URL` (the `postgres` role, Shared Pooler session
   mode), read at call time from Doppler `core/prd`. `EGRESS_PROBE_DB_URL` in the environment
   overrides it. Never print either.
-- **TLS.** Verified against the Supabase root CA pinned in `..\Helpdesk\`.
+- **TLS.** Verified against the Supabase root CA pinned beside the probe
+  (`supabase-root-ca-2021.pem`, expires 2031-04-26).
 - **Read-only.** The `postgres` role can write; the read-only transaction is what stops it here.
 - **If it ever runs unattended, give it its own role.** That means off this machine or with
   credentials shared beyond the owner's Doppler. The role holds `pg_read_all_stats` and nothing

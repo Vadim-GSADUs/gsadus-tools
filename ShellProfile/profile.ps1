@@ -919,14 +919,15 @@ function egress-probe {
 }
 
 function helpdesk {
-    # Staff helpdesk tickets (HD-n) as the scoped helpdesk_agent role (Tools\Helpdesk\README.md).
-    # DSN read from Doppler core/prd at call time; dependencies installed on first use.
-    $dir = "$GSADUsRoot\Tools\Helpdesk"
+    # Staff helpdesk tickets (HD-n) as the scoped helpdesk_agent role (the gsadus-helpdesk repo,
+    # Helpdesk\README.md). DSN read from Doppler core/prd at call time; dependencies installed on
+    # first use. Node runs the TypeScript command directly (22.18 or later).
+    $dir = "$GSADUsRoot\Helpdesk"
     if (-not (Test-Path "$dir\node_modules\pg")) {
         npm ci --prefix $dir --no-audit --no-fund --silent
         if ($LASTEXITCODE -ne 0) { throw "helpdesk: npm ci failed in $dir" }
     }
-    node "$dir\helpdesk.mjs" @args
+    node "$dir\bin\helpdesk.ts" @args
 }
 # -- Google Workspace CLI login (gws) ------------------------------------------
 # gws-login: ONE grant for everything gws can drive as vadim@ (read + write),
