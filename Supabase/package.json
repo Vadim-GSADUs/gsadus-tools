@@ -1,0 +1,12 @@
+{
+  "name": "gsadus-supabase-egress-probe",
+  "private": true,
+  "description": "Read-only egress probe for the shared gsadus-web-catalog Supabase project (pg_stat_statements, estimated bytes)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  }
+}

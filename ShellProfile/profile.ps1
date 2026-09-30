@@ -907,6 +907,17 @@ function sentry-probe {
     node "$GSADUsRoot\Tools\Sentry\sentry-probe.mjs" @args
 }
 
+function egress-probe {
+    # Supabase egress guard for the shared gsadus-web-catalog project (Tools\Supabase\README.md).
+    # Read-only by construction; DSN read from Doppler core/prd at call time. Exit 2 = over the limit.
+    $dir = "$GSADUsRoot\Tools\Supabase"
+    if (-not (Test-Path "$dir\node_modules\pg")) {
+        npm ci --prefix $dir --no-audit --no-fund --silent
+        if ($LASTEXITCODE -ne 0) { throw "egress-probe: npm ci failed in $dir" }
+    }
+    node "$dir\egress-probe.mjs" @args
+}
+
 function helpdesk {
     # Staff helpdesk tickets (HD-n) as the scoped helpdesk_agent role (Tools\Helpdesk\README.md).
     # DSN read from Doppler core/prd at call time; dependencies installed on first use.

@@ -38,6 +38,7 @@ never needs editing again.
 | `pull-env -RepoPath .` | Refresh only this registered checkout's env, including linked worktrees. |
 | `init-worktree` | Initialize this linked worktree's missing env and npm dependencies. |
 | `sentry-probe` | Read-only Sentry issues/events for any project in the org — see `..\Sentry\README.md`. |
+| `egress-probe` | Read-only Supabase egress guard for the shared project; `check` exits 2 over the limit — see `..\Supabase\README.md`. |
 
 ## Sync model
 
