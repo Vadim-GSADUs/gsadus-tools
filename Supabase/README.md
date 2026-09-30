@@ -10,7 +10,9 @@
 | File | Purpose |
 |---|---|
 | `egress-probe.mjs` | The probe. Node ≥ 20; `pg` is its only dependency. |
+| `Register-EgressCheckTask.ps1` | Registers (or `-Unregister`s) the daily `\GSADUs\supabase-egress-check` task. |
 | `.state\snapshots.json` | Local baselines saved by `check`. Gitignored and per machine. |
+| `.state\check.log` | The scheduled task's output. Gitignored. |
 
 ```powershell
 egress-probe check                    # shell-profile function (pwsh); installs pg on first use
@@ -34,6 +36,22 @@ Add `--json` for the raw payload.
    (default **100** MB/day billed-equivalent, about 60% of the 167 MB/day budget).
 
 Exit codes: 0 ok, 1 error, 2 over the limit.
+
+**Snapshots store rows, never bytes.** Row widths come from `pg_stats` and change whenever a
+table is analyzed. So a delta in bytes is always (rows now − rows then) × today's width, summed
+in the database. The snapshot holds the 300 statements with the largest estimates. A statement
+older than the baseline but missing from it is counted at its lower bound and marked `≥`.
+
+## The daily task
+
+Owner decision, 2026-09-29: the task runs once a day, on **this PC only** (gsadus-vadim).
+- **Register or remove it:**
+  `pwsh -File C:\GSADUs\Tools\Supabase\Register-EgressCheckTask.ps1 [-Unregister]`.
+- **When it runs:** `check` at 08:00, or at the next start if the PC was off.
+- **Where the result goes:** its output is appended to `.state\check.log`.
+- **How to read it:** `LastTaskResult` 2 means it was over the limit. The log's last block says
+  which statements grew.
+- **Why daily:** each run is the next one's 24 h baseline.
 
 ## How bytes are estimated
 
