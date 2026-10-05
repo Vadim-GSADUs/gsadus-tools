@@ -23,7 +23,8 @@ try {
                 ((Get-Item -LiteralPath $modules).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
                 throw 'Refusing npm ci through a node_modules junction or symlink.'
             }
-            git -C $context.Root check-ignore -q -- $modules
+            # Trailing slash: a missing path cannot match a directory-only rule (node_modules/).
+            git -C $context.Root check-ignore -q -- 'node_modules/'
             if ($LASTEXITCODE -ne 0) { throw 'node_modules must be gitignored.' }
             # Profile restores the existing managed npm auth without rendering other repos.
             Push-Location $context.Root

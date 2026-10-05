@@ -3,8 +3,9 @@
 // transaction, runs statements defined as constants in this file (never caller-supplied SQL),
 // and always rolls back. Keep it that way.
 //
-// Why it exists: the org is on the Free plan (5 GB egress per cycle, cycles start on the 6th)
-// and every repo spends the same budget through the same Shared Pooler. Spec, budget math and
+// Why it exists: the org is on the Pro plan since 2026-10-02 (250 GB uncached egress per cycle,
+// cycles start on the 6th; Free was 5 GB) and every repo spends the same budget through the
+// same Shared Pooler. Spec, budget math and
 // the patterns that keep reads cheap: Vault wiki/curated/supabase-egress-budget.md.
 //
 // What it measures: pg_stat_statements counts calls and rows, never bytes. The probe estimates
@@ -26,7 +27,7 @@
 // 2031-04-26).
 //
 // Usage (node >= 20, any cwd; `egress-probe` is the pwsh shell-profile function):
-//   node C:/GSADUs/Tools/Supabase/egress-probe.mjs check  [--max-mb-day 100] [--since latest|<snapshot>] [--min-age-h 1] [--limit 10] [--no-save]
+//   node C:/GSADUs/Tools/Supabase/egress-probe.mjs check  [--max-mb-day 5000] [--since latest|<snapshot>] [--min-age-h 1] [--limit 10] [--no-save]
 //   node C:/GSADUs/Tools/Supabase/egress-probe.mjs roles                        # totals by role since the stats reset
 //   node C:/GSADUs/Tools/Supabase/egress-probe.mjs top    [--role webapp_service] [--limit 20]
 //   node C:/GSADUs/Tools/Supabase/egress-probe.mjs snapshots                    # local baselines (no DB call)
@@ -46,13 +47,13 @@ const USAGE_PAGE = 'https://supabase.com/dashboard/org/luemjnmkgzhppwrgncsa/usag
 // pg-connection-string turns these into an `ssl` object that would replace the verifying one.
 const DSN_SSL_KEYS = ['ssl', 'sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'sslnegotiation'];
 
-const BUDGET_BYTES = 5e9; // Free plan: 5 GB uncached egress per cycle, all services together
+const BUDGET_BYTES = 250e9; // Pro plan: 250 GB uncached egress per cycle, all services together
 const CYCLE_START_DAY = 6;
 const WIRE_FACTOR = 1.5; // billed bytes per estimated byte (calibration above)
 const FALLBACK_WIDTH = 100;
 const KEEP = 300; // statements kept per snapshot as the next baseline
 const SNAPSHOTS_KEPT = 60;
-const DEFAULT_MAX_MB_DAY = 100; // ~60% of the 167 MB/day budget; the rest covers auth, storage, spikes
+const DEFAULT_MAX_MB_DAY = 5000; // ~60% of the ~8,300 MB/day budget; the rest covers auth, storage, spikes
 // Platform-side roles: their queries run next to the database (Auth, Realtime, PostgREST's
 // schema cache, Supavisor's auth_query) and are not billed as egress to a client.
 const INTERNAL = /^(supabase_\w+|pgbouncer|authenticator)$/;
@@ -237,7 +238,7 @@ function cycle(now) {
 function cycleLine(now) {
   const c = cycle(now);
   return `cycle ${iso(c.start).slice(0, 10)} → ${iso(c.end).slice(0, 10)}, day ${c.day}/${c.days} · ` +
-    `budget 5 GB ≈ ${fmtMB(c.perDay)} MB/day for everything · billed total: ${USAGE_PAGE}`;
+    `budget ${BUDGET_BYTES / 1e9} GB ≈ ${fmtMB(c.perDay)} MB/day for everything · billed total: ${USAGE_PAGE}`;
 }
 function stmtLines(rows, deltaMode) {
   return rows.map((r) => {
