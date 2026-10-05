@@ -33,7 +33,9 @@ Add `--json` for the raw payload.
    statements that grew most.
 3. **Saves a new snapshot**, unless you pass `--no-save`.
 4. **Applies the limit:** exits **2** when client-facing traffic runs above `--max-mb-day`
-   (default **100** MB/day billed-equivalent, about 60% of the 167 MB/day budget).
+   (default **500** MB/day billed-equivalent: about twice the traffic measured before the
+   2026-09-29 fixes and 6% of the ~8,300 MB/day Pro share, an early warning rather than a quota
+   line (owner 2026-10-05); it was 100 MB/day on the Free plan).
 
 Exit codes: 0 ok, 1 error, 2 over the limit.
 
