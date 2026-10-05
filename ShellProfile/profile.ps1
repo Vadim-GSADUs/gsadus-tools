@@ -266,16 +266,16 @@ function Invoke-WipConflictAgent {
         "Classify each incoming hunk as superseded, missing or contradicted; apply only missing work, as uncommitted changes; never commit, push or rewrite branches. " +
         "Then set wip.lastApplied, rerun the sync with the exact pre-approved command in the report, and finish with a per-file summary citing the commits or PRs that decided each one.") -f $GSADUsWipConflictReport
 
-    # Pinned setup for the conflict-resolution session (decision 2026-07-14):
-    # Opus 4.8 (not the account default), acceptEdits so file resolution in the
-    # conflicted sub-repos never prompts, git pre-allowed in both shells, read-only
-    # gh PR lookups for the evidence step, and the exact sync rerun.
+    # Setup for the conflict-resolution session (decision 2026-07-14): acceptEdits
+    # so file resolution in the conflicted sub-repos never prompts, git pre-allowed
+    # in both shells, read-only gh PR lookups for the evidence step, and the exact
+    # sync rerun. No --model: the session runs the account's default model, so it
+    # never lags behind on a pinned ID that has aged into legacy (owner 2026-09-30).
     # The prompt MUST come first: --allowedTools is variadic and swallows every
     # following bare argument, so a trailing prompt became one more "tool name"
     # and the session opened empty (found 2026-09-28).
     $claudeArgs = @(
         $prompt
-        '--model', 'claude-opus-4-8'
         '--permission-mode', 'acceptEdits'
         '--name', 'wip-conflict'
         '--allowedTools'
