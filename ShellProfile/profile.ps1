@@ -41,7 +41,6 @@ $GSADUsRetiredRepos = @(
     'PostProcess\DigitalDarkroom'   # archived 2026-07-07; superseded by PNGTools darkroom
     'PostProcess\Darkroom'          # archived 2026-07-07; stalled web console, PNGTools outgrew it
     'SiteCheck'                     # retired 2026-08-06, GitHub repo DELETED 2026-08-11 (no remote); module ships from WebApp
-    'Dashboard'                     # archived 2026-10-06; owner retired it instead of repairing it, no successor
 )
 
 # GitHub owners whose repos belong to this workspace. BOTH are the owner's: the
