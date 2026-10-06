@@ -20,6 +20,9 @@ This GET-only helper uses the existing Vercel CLI login. It never deploys, promo
 changes settings, or reads application secrets. Project/team names are explicit;
 it works without a `.vercel/project.json` and does not need one in each worktree.
 On a new machine install the Vercel CLI and run `vercel login`, then `vercel whoami`.
+Run `vercel whoami` from an agent shell as well. Agent shells in the Claude or Codex app may
+read a private copy of the login, which a login from outside never updates
+([ShellProfile README](../ShellProfile/README.md) → Desktop app containers).
 CLI 54.18.7 was verified on 2026-09-17; it already has all required flags.
 
 The command discovers the **full pushed SHA**, newest matching deployment first,

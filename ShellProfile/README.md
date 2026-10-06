@@ -124,3 +124,30 @@ pwsh -NoProfile -File C:\GSADUs\Tools\ShellProfile\Start-DockerDesktop.ps1
 ```
 
 The local installation and Docker repair evidence is in [SETUP-VERIFICATION.md](SETUP-VERIFICATION.md).
+
+## Desktop app containers (Claude and Codex)
+
+The Claude and Codex desktop apps are MSIX packages. Agent tool shells, hooks and anything
+they start run inside the app's container. The Claude app's Terminal panel, Task Scheduler,
+Explorer and WSL run outside it (checked 2026-10-05). Inside a container, the user's
+`AppData` is a merged view; `%TEMP%` and the profile outside `AppData` are not redirected:
+
+- A new top-level folder created inside lands in the app's private copy,
+  `%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming` or `…\Local`
+  (`Claude_pzs8sxrjxfjjc`, `OpenAI.Codex_2p2nqsd0c76g0`).
+- Inside, a file in the private copy hides the real file of the same name, and new files
+  written to a folder that has a private copy go to the private copy.
+- A folder that exists only in the real `AppData` is shared: reads, edits and new files from
+  inside go to the real folder.
+- Outside processes, and the other app, never see a private copy.
+
+**CLI logins kept in files under `AppData`** (the Vercel CLI keeps its login in
+`%APPDATA%\xdg.data\com.vercel.cli\auth.json`). Suppose that CLI first ran inside an app. A
+later login from outside then updates only the real file, and that app's agent shells keep
+the old login or none. Logins kept in the Windows Credential Manager (`gh`) are not
+redirected. To share one login, log in from outside, then delete the app's private copy of
+that CLI's folder, e.g.
+`%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\xdg.data\com.vercel.cli`.
+Agent shells then read and refresh the real file. Copying the real files into the private
+copy works only until the next login or token refresh on either side. List both packages'
+`LocalCache\Roaming` and `LocalCache\Local` to see which tools hold a private copy.
