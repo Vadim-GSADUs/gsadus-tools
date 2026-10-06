@@ -146,8 +146,10 @@ Explorer and WSL run outside it (checked 2026-10-05). Inside a container, the us
 later login from outside then updates only the real file, and that app's agent shells keep
 the old login or none. Logins kept in the Windows Credential Manager (`gh`) are not
 redirected. To share one login, log in from outside, then delete the app's private copy of
-that CLI's folder, e.g.
-`%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\xdg.data\com.vercel.cli`.
-Agent shells then read and refresh the real file. Copying the real files into the private
-copy works only until the next login or token refresh on either side. List both packages'
-`LocalCache\Roaming` and `LocalCache\Local` to see which tools hold a private copy.
+that CLI's folder. Delete its private parent folders too once they are empty, or the next
+new folder under them lands in the private copy again. Agent shells then read and refresh
+the real file. Copying the real files into the private copy works only until the next
+login or token refresh on either side. List both packages' `LocalCache\Roaming` and
+`LocalCache\Local` to see which tools hold a private copy. VG-HOME, 2026-10-05: the Claude
+app's private `Roaming\xdg.data` (only the Vercel login) was deleted, and `vercel whoami`
+from an agent shell then read the real login.
