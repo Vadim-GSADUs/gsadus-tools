@@ -1,0 +1,68 @@
+{
+  "comment": "Ordered rules for inbox-scan.ps1: the first match wins. Each rule matches on any of from / subject / snippet (regex, case-insensitive) and label (a Gmail label name or system id); every field given must match. class: needs | watch | receipt | receipt? | info | noise. Vendor senders only: never put a client's or staff member's personal details here.",
+  "receiptForwardTo": "accounting@gsadus.com",
+  "forwardedLabel": "Forwarded to accounting",
+  "rules": [
+    { "class": "info", "kind": "verification code (never copy it)", "subject": "verification code|one-time passcode|your .*code$|sign-in code|security code" },
+
+    { "class": "receipt", "kind": "GitHub receipt", "from": "noreply@github\\.com", "subject": "^\\[GitHub\\] Payment Receipt" },
+    { "class": "receipt", "kind": "Stripe receipt/invoice", "from": "^invoice\\+statements@", "subject": "receipt|invoice" },
+    { "class": "receipt", "kind": "Google payment", "from": "payments-noreply@google\\.com", "subject": "received your payment" },
+    { "class": "receipt", "kind": "receipt from the personal account (work card)", "from": "vgritsak93@gmail\\.com", "subject": "receipt|invoice" },
+    { "class": "receipt", "kind": "vendor receipt/invoice", "from": "@([a-z0-9.-]+\\.)?(vercel|doppler|supabase|anthropic|openai|github|fal|tailscale|sentry|getsentry|inngest|resend)\\.(com|ai|io)", "subject": "receipt|invoice|payment (received|confirmation)" },
+
+    { "class": "noise", "kind": "Sentry deploy notice", "label": "Deploys" },
+    { "class": "noise", "kind": "promotion", "label": "Promotions" },
+    { "class": "noise", "kind": "promotion", "label": "CATEGORY_PROMOTIONS" },
+
+    { "class": "needs", "kind": "Workspace admin security alert", "note": "Not ours to fix: pass it to William's team (owner 2026-10-14)", "from": "google-workspace-alerts-noreply@google\\.com" },
+    { "class": "needs", "kind": "Workspace admin security notice", "note": "Not ours to fix: pass it to William's team (owner 2026-10-14)", "from": "workspace-noreply@google\\.com", "subject": "security|2-step|2sv|suspicious" },
+    { "class": "needs", "kind": "Workspace deadline or action", "from": "workspace-noreply@google\\.com", "subject": "action required|action advised|by [A-Z][a-z]+ \\d" },
+    { "class": "info", "kind": "Workspace notice", "from": "workspace-noreply@google\\.com" },
+    { "class": "needs", "kind": "Gmail forwarding request", "note": "The owner's own request from vgritsak93@gmail.com is known (2026-10-06); anything else is a security item", "from": "forwarding-noreply@google\\.com" },
+
+    { "class": "info", "kind": "Google new sign-in (routine)", "from": "no-reply@accounts\\.google\\.com", "snippet": "new sign-in" },
+    { "class": "needs", "kind": "Google account security change (confirm it was you)", "from": "no-reply@accounts\\.google\\.com" },
+
+    { "class": "watch", "kind": "Vercel failed deploy (check the project's current state before reporting)", "from": "notifications@vercel\\.com", "subject": "fail" },
+    { "class": "needs", "kind": "Vercel usage limit", "note": "Tech Dev task: Decide Vercel Pro for team vadim-7430s-projects", "from": "vercel\\.com", "subject": "limit|usage|paused|suspend" },
+    { "class": "info", "kind": "Vercel sign-in or notice", "from": "notifications@vercel\\.com" },
+
+    { "class": "needs", "kind": "GitHub app permission request", "from": "noreply@github\\.com", "subject": "requesting updated permissions" },
+    { "class": "needs", "kind": "GitHub account deadline", "from": "noreply@github\\.com", "subject": "action required" },
+    { "class": "watch", "kind": "GitHub security notice (confirm it was you)", "from": "noreply@github\\.com", "subject": "access token|OAuth application|passkey|two-factor|SSH key|deploy key|recovery codes" },
+    { "class": "info", "kind": "GitHub notice", "from": "github\\.com" },
+
+    { "class": "watch", "kind": "Google Cloud alert firing", "from": "alerting-noreply@google\\.com", "subject": "^\\[ALERT" },
+    { "class": "info", "kind": "Google Cloud alert resolved", "from": "alerting-noreply@google\\.com" },
+    { "class": "needs", "kind": "Google Cloud action (check live code before acting)", "from": "cloudplatform-noreply@google\\.com", "subject": "action required|action advised" },
+    { "class": "info", "kind": "Google Cloud notice", "from": "(cloudplatform|google-maps-platform|platformnotifications)-noreply@google\\.com" },
+
+    { "class": "needs", "kind": "Supabase quota or billing warning", "from": "supabase\\.com", "subject": "quota|exceeded|usage|suspend|pause|restrict|grace" },
+    { "class": "watch", "kind": "Supabase access change", "from": "supabase\\.com", "subject": "OAuth|access|member" },
+    { "class": "info", "kind": "Supabase notice", "from": "supabase\\.com" },
+
+    { "class": "watch", "kind": "Sentry issue alert", "from": "getsentry\\.com", "subject": "^[A-Z]+-[A-Z0-9]+ - " },
+    { "class": "needs", "kind": "Sentry billing or quota", "from": "getsentry\\.com|sentry\\.io", "subject": "quota|trial|billing|limit|spike" },
+    { "class": "watch", "kind": "Sentry security change", "from": "getsentry\\.com", "subject": "security" },
+    { "class": "noise", "kind": "Sentry report", "from": "getsentry\\.com|sentry\\.io" },
+
+    { "class": "needs", "kind": "Healthchecks.io check down", "from": "healthchecks\\.io", "subject": "down|failed" },
+    { "class": "info", "kind": "Healthchecks.io report", "from": "healthchecks\\.io" },
+    { "class": "info", "kind": "Doppler login or CLI notice", "from": "support@doppler\\.com", "subject": "dashboard login|cli has been authorized" },
+    { "class": "watch", "kind": "Doppler account notice", "from": "support@doppler\\.com" },
+    { "class": "watch", "kind": "Tailscale notice (plan is Personal, verified 2026-10-14)", "from": "tailscale\\.com" },
+    { "class": "watch", "kind": "Inngest notice", "from": "inngest\\.com", "subject": "fail|error|limit|usage" },
+    { "class": "watch", "kind": "Resend notice", "from": "resend\\.com", "subject": "fail|bounce|limit|usage|invited" },
+    { "class": "needs", "kind": "QuickBooks or Intuit invite", "from": "intuit\\.com", "subject": "invited you" },
+    { "class": "info", "kind": "Intuit or payroll notice", "from": "intuit\\.com|tsheets\\.com" },
+
+    { "class": "info", "kind": "calendar invite or share", "subject": "^(Invitation|Updated invitation|Canceled event|Accept your invitation|Appointment booked)|shared calendar|updated your access to the calendar" },
+    { "class": "info", "kind": "Drive share", "from": "drive-shares-dm-noreply@google\\.com|contacts-noreply@google\\.com" },
+    { "class": "watch", "kind": "Chat message while away", "from": "chat-noreply@google\\.com" },
+    { "class": "info", "kind": "sent by you", "from": "vadim@gsadus\\.com" },
+    { "class": "needs", "kind": "person writing (staff)", "from": "@(gsadus\\.com|goldenstatede\\.com)" },
+
+    { "class": "receipt?", "kind": "possible receipt from an unlisted sender (confirm, then forward)", "subject": "\\b(receipt|invoice|payment (received|confirmation)|your order)\\b" }
+  ]
+}
