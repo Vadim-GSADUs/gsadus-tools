@@ -101,4 +101,4 @@ The CSV format enables future automation:
 | `Generate-FamilyCatalog.ps1` | Main PowerShell script with GUI |
 | `FamilyCatalogGenerator.bat` | Batch file launcher |
 | `Build-CatalogGenerator.ps1` | Script to create standalone .exe |
-| `dist/` | Output folder for built executable |
+| `dist/` | Build output, not tracked: run `Build-CatalogGenerator.ps1` |

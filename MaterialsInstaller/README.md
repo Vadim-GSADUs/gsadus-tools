@@ -66,7 +66,7 @@ Admin rights are no longer required (destination is no longer under Program File
 | `Install-Materials.ps1` | Main PowerShell script with GUI |
 | `MaterialsInstaller.bat` | Batch launcher |
 | `Build-Installer.ps1` | Builds standalone .exe via PS2EXE |
-| `dist/` | Build output (rebuild after script changes) |
+| `dist/` | Build output, not tracked: run `Build-Installer.ps1` |
 
 ## Image Extensions Recognized
 

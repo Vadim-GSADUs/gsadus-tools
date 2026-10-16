@@ -9,3 +9,7 @@ Supabase/.state/
 
 # Machine-local Claude Code permission allowlist
 .claude/settings.local.json
+
+# Built executables: run each tool's Build-*.ps1 (owner 2026-10-16)
+MaterialsInstaller/dist/
+FamilyCatalogGenerator/dist/
