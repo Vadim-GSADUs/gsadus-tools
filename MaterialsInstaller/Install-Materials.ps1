@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     Materials Installer - Aggregates Revit material textures into the shared
-    GSDE Projects materials folder, from either a Revit family library or
+    CADD Materials folder, from either a Revit family library or
     one-off downloaded family bundles (.zip / .rar / .7z).
 
 .NOTES
@@ -129,7 +129,7 @@ function Get-DefaultDownloadsPath {
 # (see Vault/wiki/curated/architextures-material-sync.md for the per-PC Revit setup).
 $script:DownloadsPath     = Get-DefaultDownloadsPath
 $script:DefaultSourcePath = $script:DownloadsPath
-$script:DefaultDestPath   = "G:\Shared drives\GSDE Projects\CADD\Materials"
+$script:DefaultDestPath   = "G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\Materials"
 
 $script:ImageExtensions        = @('.jpg','.jpeg','.png','.bmp','.tif','.tiff','.dds','.tga')
 $script:RevitFamilyExtensions  = @('.rfa','.rvt','.rte','.rft')

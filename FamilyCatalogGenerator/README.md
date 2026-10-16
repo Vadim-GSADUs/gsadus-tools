@@ -55,12 +55,12 @@ The executable will be created in the `dist` folder.
 
 The tool comes pre-configured with these category folders:
 
-- `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Windows`
-- `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Cabinets`
-- `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Doors`
-- `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Electrical`
-- `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Finish Carpentry`
-- `G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Railings`
+- `G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Windows`
+- `G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Cabinets`
+- `G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Doors`
+- `G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Electrical`
+- `G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Finish Carpentry`
+- `G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Railings`
 
 You can add, remove, or modify these paths in the GUI.
 

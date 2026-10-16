@@ -1,13 +1,13 @@
 # GSADUs Materials Installer
 
-Aggregates Revit material textures into the shared GSADUs/GSDE materials folder so every drafter renders against the same library.
+Aggregates Revit material textures into the shared CADD Materials folder so every drafter renders against the same library.
 
 ## Default Paths
 
 - **Source:** the current user's `Downloads` folder (resolved dynamically from Windows shell settings, with `C:\Users\<User>\Downloads` as fallback)
-- **Destination:** `G:\Shared drives\GSDE Projects\CADD\Materials` (canonical shared folder)
+- **Destination:** `G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\Materials` (canonical shared folder)
 
-The destination lives on the GSDE drive because GSDE handles post-contract Revit drafting (see `Vault\wiki\curated\key-locations.md` -> "GSDE Drive"). Both paths can be changed in the GUI.
+The destination is the Pre-Construction Dept's CADD library (see `Vault\wiki\curated\key-locations.md` -> "CADD library (Pre-Construction Dept)"). Both paths can be changed in the GUI.
 
 ## How It Works
 

@@ -135,15 +135,15 @@ function Show-ModernFolderDialog {
 
 # Default category paths
 $script:DefaultCategories = @(
-    "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Windows",
-    "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Cabinets",
-    "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Doors",
-    "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Electrical",
-    "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Finish Carpentry",
-    "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz\Railings"
+    "G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Windows",
+    "G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Cabinets",
+    "G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Doors",
+    "G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Electrical",
+    "G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Finish Carpentry",
+    "G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz\Railings"
 )
 
-$script:DefaultOutputPath = "G:\Shared drives\GSDE Projects\CADD\RevitFamily.Biz"
+$script:DefaultOutputPath = "G:\Shared drives\GSADUs Projects\SOPs\9 - Pre-Construction Dept\0 - CADD\RevitFamily.Biz"
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
