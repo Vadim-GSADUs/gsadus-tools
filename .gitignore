@@ -6,3 +6,6 @@ Supabase/.state/
 
 # Agent worktrees (Claude Code, Codex): local checkouts, never committed
 .claude/worktrees/
+
+# Machine-local Claude Code permission allowlist
+.claude/settings.local.json
