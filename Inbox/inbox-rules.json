@@ -63,6 +63,7 @@
     { "class": "info", "kind": "sent by you", "from": "vadim@gsadus\\.com" },
     { "class": "needs", "kind": "person writing (staff)", "from": "@(gsadus\\.com|goldenstatede\\.com)" },
 
-    { "class": "receipt?", "kind": "possible receipt from an unlisted sender (confirm, then forward)", "subject": "\\b(receipt|invoice|payment (received|confirmation)|your order)\\b" }
+    { "class": "receipt?", "kind": "possible receipt from an unlisted sender (confirm, then forward)", "subject": "\\b(receipt|invoice|payment (received|confirmation)|your order)\\b" },
+    { "class": "noise", "kind": "vendor newsletter (owner 2026-10-21)", "from": "avi@futurelot\\.com|@em1\\.cloudflare\\.com|no-reply@email\\.claude\\.com|noreply@email\\.openai\\.com" }
   ]
 }
