@@ -730,15 +730,18 @@ function Get-StreamPeer {
 
 function ConvertFrom-SunshineLog {
     # Pure: sunshine.log lines and the service status -> is a client streaming this PC now?
+    # A session ends at CLIENT DISCONNECTED, or at the display revert: a clean 'quit' logs
+    # only the revert (dd_config_revert_on_disconnect, set on both PCs), never mid-stream.
     param([string[]]$Lines = @(), [string]$Service = 'Running')
     $state = [ordered]@{ Service = $Service; Started = $null; Live = $false; Since = $null; Ended = $null }
     foreach ($line in $Lines) {
-        if ($line -notmatch '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[^\]]*\]: \w+: (CLIENT CONNECTED|CLIENT DISCONNECTED|Sunshine version)') { continue }
+        if ($line -notmatch '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[^\]]*\]: \w+: (CLIENT CONNECTED|CLIENT DISCONNECTED|Sunshine version|Trying to revert applied display)') { continue }
         $at = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [cultureinfo]::InvariantCulture)
         switch ($Matches[2]) {
-            'Sunshine version'    { $state.Started = $at; $state.Live = $false; $state.Since = $null; $state.Ended = $null }
-            'CLIENT CONNECTED'    { $state.Live = $true; $state.Since = $at }
-            'CLIENT DISCONNECTED' { $state.Live = $false; $state.Ended = $at }
+            'Sunshine version'                 { $state.Started = $at; $state.Live = $false; $state.Since = $null; $state.Ended = $null }
+            'CLIENT CONNECTED'                 { $state.Live = $true; $state.Since = $at }
+            'CLIENT DISCONNECTED'              { $state.Live = $false; $state.Ended = $at }
+            'Trying to revert applied display' { if ($state.Live) { $state.Live = $false; $state.Ended = $at } }
         }
     }
     # A stopped service streams nothing, whatever its log's last line says.
@@ -754,7 +757,7 @@ function Get-SunshineStream {
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     $lines = @()
     if (Test-Path -LiteralPath $Log) {
-        $lines = @(Select-String -LiteralPath $Log -Pattern 'CLIENT (DIS)?CONNECTED|Sunshine version' | ForEach-Object { $_.Line })
+        $lines = @(Select-String -LiteralPath $Log -Pattern 'CLIENT (DIS)?CONNECTED|Sunshine version|Trying to revert applied display' | ForEach-Object { $_.Line })
     }
     ConvertFrom-SunshineLog -Lines $lines -Service $(if ($service) { "$($service.Status)" } else { 'Missing' })
 }
@@ -900,10 +903,14 @@ function Start-StreamMoonlight {
     # Moonlight.exe imports AttachConsole: started from a terminal, it joins that console,
     # prints its log there and closes with the window. Win32_Process.Create starts it the
     # way Explorer does instead (no parent console, nothing waits on it). Returns its PID.
+    # The working directory is the user folder, never Moonlight's own: Moonlight turns
+    # portable when portable.dat is in its WORKING directory, and the ini there holds an
+    # identity neither Sunshine accepts. The pairings live in the per-user registry
+    # settings, which every ordinary launch uses (found 2026-10-21).
     param([Parameter(Mandatory)][string[]]$Arguments)
     $line = (@($GSADUsMoonlightExe) + $Arguments | ForEach-Object { '"{0}"' -f $_ }) -join ' '
     $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-        CommandLine = $line; CurrentDirectory = (Split-Path -Parent $GSADUsMoonlightExe)
+        CommandLine = $line; CurrentDirectory = $env:USERPROFILE
     }
     if ($r.ReturnValue -ne 0) { throw "Moonlight did not start (Win32_Process.Create returned $($r.ReturnValue))" }
     $r.ProcessId

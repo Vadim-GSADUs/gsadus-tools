@@ -75,7 +75,10 @@ How it decides:
 
 Moonlight is the portable copy at `%USERPROFILE%\Apps\Moonlight\Moonlight.exe` on each PC, and
 Sunshine is a service on each. `setup.ps1` installs neither; their setup and settings are in
-the Vault (`wiki/curated/remote-access.md` → Sunshine + Moonlight).
+the Vault (`wiki/curated/remote-access.md` → Sunshine + Moonlight). `remote` starts Moonlight
+from the user folder: Moonlight goes portable when `portable.dat` is in its *working*
+directory, and the `Moonlight.ini` beside the exe holds an unpaired identity. The pairings are
+in the per-user registry settings, which ordinary launches use.
 
 Offline checks, with mocks only (they start and end no stream):
 

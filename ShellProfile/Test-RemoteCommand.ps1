@@ -53,6 +53,11 @@ try {
     $s = ConvertFrom-SunshineLog -Lines ($liveLog + '[2026-10-21 18:00:00.000]: Info: Sunshine version: x')
     Assert (-not $s.Live -and -not $s.Since -and $s.Started -eq [datetime]'2026-10-21 18:00:00') 'A Sunshine start must reset it'
     Assert (-not (ConvertFrom-SunshineLog -Lines $liveLog -Service 'Stopped').Live) 'A stopped service must not be live'
+    # A clean quit logs no DISCONNECTED, only the display revert (seen 2026-10-21 20:01).
+    $s = ConvertFrom-SunshineLog -Lines ($liveLog + '[2026-10-21 20:01:48.953]: Info: Trying to revert applied display device settings. API is available: true')
+    Assert (-not $s.Live -and $s.Ended -eq [datetime]'2026-10-21 20:01:48') 'The display revert must end a live session'
+    $s = ConvertFrom-SunshineLog -Lines ($idleLog + '[2026-10-21 16:54:42.452]: Info: Trying to revert applied display device settings. API is available: true')
+    Assert (-not $s.Live -and $s.Ended -eq [datetime]'2026-10-21 16:54:38') 'A revert after DISCONNECTED (or at startup) must not move the end'
     $s = ConvertFrom-SunshineLog -Lines @('Max Luminance      : 301.849 nits', '[2026-10-21 08:23:01.378]: Info: Executing [Desktop]')
     Assert (-not $s.Live -and -not $s.Since -and -not $s.Started) 'Other log lines must be ignored'
 
@@ -145,6 +150,18 @@ try {
         $GSADUsMoonlightExe = 'C:\GSADUs-no-such-dir\Moonlight.exe'
         $out = remote connect 6>&1 | Out-String
         Assert ($script:launched.Count -eq 1 -and $out -like '*Moonlight not found*') 'A missing Moonlight must be reported'
+    }
+
+    # -- the Moonlight launch itself ---------------------------------------------------
+    & {
+        $script:cim = $null
+        function Invoke-CimMethod { [CmdletBinding()] param($ClassName, $MethodName, $Arguments) $script:cim = $Arguments; [pscustomobject]@{ ReturnValue = 0; ProcessId = 777 } }
+        $id = Start-StreamMoonlight 'stream', 'GSADUS-VADIM', 'Desktop'
+        Assert ($id -eq 777 -and $script:cim.CommandLine -eq ('"{0}" "stream" "GSADUS-VADIM" "Desktop"' -f $GSADUsMoonlightExe)) 'The launch must quote the exe and every argument'
+        Assert ($script:cim.CurrentDirectory -eq $env:USERPROFILE -and $script:cim.CurrentDirectory -ne (Split-Path -Parent $GSADUsMoonlightExe)) "Moonlight must not start in its own folder (portable.dat there switches to the unpaired ini)"
+        function Invoke-CimMethod { [CmdletBinding()] param($ClassName, $MethodName, $Arguments) [pscustomobject]@{ ReturnValue = 9 } }
+        $failed = $false; try { Start-StreamMoonlight 'quit', 'X' } catch { $failed = $true }
+        Assert $failed 'A failed Win32_Process.Create must throw'
     }
 
     # -- disconnect -----------------------------------------------------------------
