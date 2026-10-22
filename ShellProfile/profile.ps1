@@ -774,32 +774,34 @@ function Invoke-StreamPeer {
     # its stdout lines. It never hangs: BatchMode (no prompt), a short connect timeout,
     # keepalives, and a hard deadline. The script travels base64-encoded, so neither
     # side's shell parses its $ or parentheses (Vault wiki: remote-access).
+    # ssh's stdio are temp files, not pipes: run without a console (inside an SSH session,
+    # as agents run 'remote'), Windows OpenSSH 9.5's client never exits once its output is
+    # a pipe, though the far side has sent everything (traced 2026-10-21, on both PCs).
     param([Parameter(Mandatory)][string]$Script, [int]$TimeoutSec = 10)   # a healthy call takes ~1.5 s
     $peer = Get-StreamPeer
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
-    $psi = [Diagnostics.ProcessStartInfo]::new('ssh')
-    foreach ($a in @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2',
-            "$($peer.SshUser)@$($peer.SshHost)", "pwsh -NoProfile -NonInteractive -EncodedCommand $encoded")) {
-        $psi.ArgumentList.Add($a)
-    }
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
-    try { $p = [Diagnostics.Process]::Start($psi) }
-    catch { return [pscustomobject]@{ Ok = $false; Output = @(); Error = "ssh did not start: $($_.Exception.Message)" } }
-    $p.StandardInput.Close()
-    $stdout = $p.StandardOutput.ReadToEndAsync()
-    $stderr = $p.StandardError.ReadToEndAsync()
-    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
-        try { $p.Kill($true) } catch { }
-        return [pscustomobject]@{ Ok = $false; Output = @(); Error = "no answer within $TimeoutSec s" }
-    }
-    $p.WaitForExit()   # lets the async reads finish
-    # The far pwsh can add CLIXML noise to stderr; ssh's own errors are plain lines.
-    $err = @($stderr.Result -split '\r?\n' | Where-Object { $_ -and $_ -notmatch '^#< CLIXML|^<Objs ' })
-    [pscustomobject]@{
-        Ok     = $p.ExitCode -eq 0
-        Output = @($stdout.Result -split '\r?\n' | Where-Object { $_ })
-        Error  = if ($p.ExitCode -eq 0) { $null } elseif ($err) { $err[-1] } else { "ssh exit $($p.ExitCode)" }
+    $sshArgs = '-o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 {0}@{1} "pwsh -NoProfile -NonInteractive -EncodedCommand {2}"' -f
+        $peer.SshUser, $peer.SshHost, $encoded
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ('gsadus-remote-' + [guid]::NewGuid().ToString('N'))
+    try {
+        Set-Content -LiteralPath "$tmp.in" -Value '' -NoNewline   # stdin: empty, so ssh reads EOF at once
+        try {
+            $p = Start-Process -FilePath ssh -ArgumentList $sshArgs -PassThru -WindowStyle Hidden -ErrorAction Stop `
+                -RedirectStandardInput "$tmp.in" -RedirectStandardOutput "$tmp.out" -RedirectStandardError "$tmp.err"
+        } catch { return [pscustomobject]@{ Ok = $false; Output = @(); Error = "ssh did not start: $($_.Exception.Message)" } }
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+            try { $p.Kill($true); $p.WaitForExit() } catch { }
+            return [pscustomobject]@{ Ok = $false; Output = @(); Error = "no answer within $TimeoutSec s" }
+        }
+        # The far pwsh can add CLIXML noise to stderr; ssh's own errors are plain lines.
+        $err = @(Get-Content -LiteralPath "$tmp.err" | Where-Object { $_ -and $_ -notmatch '^#< CLIXML|^<Objs ' })
+        [pscustomobject]@{
+            Ok     = $p.ExitCode -eq 0
+            Output = @(Get-Content -LiteralPath "$tmp.out" | Where-Object { $_ })
+            Error  = if ($p.ExitCode -eq 0) { $null } elseif ($err) { $err[-1] } else { "ssh exit $($p.ExitCode)" }
+        }
+    } finally {
+        Remove-Item -LiteralPath "$tmp.in", "$tmp.out", "$tmp.err" -Force -ErrorAction SilentlyContinue
     }
 }
 

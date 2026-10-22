@@ -267,6 +267,8 @@ try {
         function Get-StreamPeer { @{ Name = 'TEST'; Moonlight = 'TEST'; SshUser = 'nobody'; SshHost = 'gsadus-remote-test.invalid' } }
         $r = Invoke-StreamPeer -Script '1'
         Assert (-not $r.Ok -and $r.Error -like '*resolve*') "A bad host name must fail with ssh's reason (got: $($r.Error))"
+        $left = @(Get-ChildItem ([IO.Path]::GetTempPath()) -Filter 'gsadus-remote-*' | Where-Object { $_.Name -match '^gsadus-remote-[0-9a-f]{32}\.(in|out|err)$' })
+        Assert ($left.Count -eq 0) "ssh's temp stdio files must be removed (left: $($left.Name -join ', '))"
     }
 
     Write-Host 'PASS: pairing, sunshine.log reading, the SSH probe round trip, status text, menu per state and dispatch, connect/disconnect/kick/restart with mocks, SSH fail-fast.'
