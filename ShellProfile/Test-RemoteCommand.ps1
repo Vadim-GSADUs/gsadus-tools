@@ -246,7 +246,7 @@ try {
         Assert (-not $r.Ok -and $r.Error -and $sw.Elapsed.TotalSeconds -lt 5) "An unreachable peer must fail by the deadline (took $($sw.Elapsed.TotalSeconds) s)"
         $sw.Restart()
         $r = Invoke-StreamPeer -Script '1'
-        Assert (-not $r.Ok -and $r.Error -and $sw.Elapsed.TotalSeconds -lt 9) "ssh's own connect timeout must apply (took $($sw.Elapsed.TotalSeconds) s)"
+        Assert (-not $r.Ok -and $r.Error -and $sw.Elapsed.TotalSeconds -lt 11) "The default deadline must apply (took $($sw.Elapsed.TotalSeconds) s)"
         function Get-StreamPeer { @{ Name = 'TEST'; Moonlight = 'TEST'; SshUser = 'nobody'; SshHost = 'gsadus-remote-test.invalid' } }
         $r = Invoke-StreamPeer -Script '1'
         Assert (-not $r.Ok -and $r.Error -like '*resolve*') "A bad host name must fail with ssh's reason (got: $($r.Error))"

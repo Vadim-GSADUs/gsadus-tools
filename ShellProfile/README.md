@@ -65,8 +65,8 @@ How it decides:
   the last `CLIENT CONNECTED` or `CLIENT DISCONNECTED` since the service started. **A stream
   from a PC** is its Moonlight process.
 - **The other PC's half** comes from one SSH call (key auth, `BatchMode`, a 5 s connect timeout
-  and a 20 s deadline), so `remote` never hangs. With SSH down it says so and still shows this
-  PC's half.
+  and a 10 s deadline; a healthy call takes about 1.5 s), so `remote` never hangs. With SSH down
+  it says so and still shows this PC's half.
 - **No credentials:** no stored password, and no Sunshine web API (it needs the owner's web
   login). SSH can't drive the other PC's desktop, so `kick` closes its Moonlight instead of
   quitting cleanly.

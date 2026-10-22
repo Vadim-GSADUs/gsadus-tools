@@ -771,7 +771,7 @@ function Invoke-StreamPeer {
     # its stdout lines. It never hangs: BatchMode (no prompt), a short connect timeout,
     # keepalives, and a hard deadline. The script travels base64-encoded, so neither
     # side's shell parses its $ or parentheses (Vault wiki: remote-access).
-    param([Parameter(Mandatory)][string]$Script, [int]$TimeoutSec = 20)
+    param([Parameter(Mandatory)][string]$Script, [int]$TimeoutSec = 10)   # a healthy call takes ~1.5 s
     $peer = Get-StreamPeer
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
     $psi = [Diagnostics.ProcessStartInfo]::new('ssh')
