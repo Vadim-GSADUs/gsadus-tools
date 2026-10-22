@@ -39,6 +39,49 @@ never needs editing again.
 | `init-worktree` | Initialize this linked worktree's missing env and npm dependencies. |
 | `sentry-probe` | Read-only Sentry issues/events for any project in the org — see `..\Sentry\README.md`. |
 | `egress-probe` | Read-only Supabase egress guard for the shared project; `check` exits 2 over the limit — see `..\Supabase\README.md`. |
+| `remote` | Moonlight/Sunshine streams between the two PCs: what is live, then a menu of what applies now — see [Streams between the PCs](#streams-between-the-pcs-remote). |
+
+## Streams between the PCs (`remote`)
+
+`remote` manages the Moonlight/Sunshine streams between VG-HOME and GSADUS-VADIM without an
+agent. With no argument it prints what is live in both directions, then a numbered menu of
+only the actions that apply now (Enter cancels). Each action is also a subcommand, and they
+tab-complete:
+
+| Command | Action |
+|---|---|
+| `remote status` | What is live, both ways. No menu. |
+| `remote connect` | Stream the other PC's Desktop. Moonlight starts detached (through WMI, as Explorer would), so it prints nothing in the terminal and doesn't depend on it. |
+| `remote disconnect` | End this PC's stream: a clean `Moonlight quit`, then close any Moonlight left here. |
+| `remote kick` | End the other PC's stream into this PC: close its Moonlight over SSH, then wait up to 20 s for Sunshine here to drop the stream. |
+| `remote restart` | Restart Sunshine on this PC (one UAC prompt). It ends any stream into this PC without SSH; the menu offers it when SSH is down. |
+
+How it decides:
+
+- **The other PC** is the other row of `$GSADUsStreamPCs`, picked by `$env:COMPUTERNAME`; there
+  is no per-machine config. Moonlight gets the name it paired each PC under (`VG-Home`,
+  `GSADUS-VADIM`).
+- **A stream into a PC** is read from that PC's `C:\Program Files\Sunshine\config\sunshine.log`:
+  the last `CLIENT CONNECTED` or `CLIENT DISCONNECTED` since the service started. **A stream
+  from a PC** is its Moonlight process.
+- **The other PC's half** comes from one SSH call (key auth, `BatchMode`, a 5 s connect timeout
+  and a 20 s deadline), so `remote` never hangs. With SSH down it says so and still shows this
+  PC's half.
+- **No credentials:** no stored password, and no Sunshine web API (it needs the owner's web
+  login). SSH can't drive the other PC's desktop, so `kick` closes its Moonlight instead of
+  quitting cleanly.
+- **Over SSH**, `connect` refuses (a Moonlight started there has no desktop), and `disconnect`
+  skips the quit and only closes Moonlight.
+
+Moonlight is the portable copy at `%USERPROFILE%\Apps\Moonlight\Moonlight.exe` on each PC, and
+Sunshine is a service on each. `setup.ps1` installs neither; their setup and settings are in
+the Vault (`wiki/curated/remote-access.md` → Sunshine + Moonlight).
+
+Offline checks, with mocks only (they start and end no stream):
+
+```powershell
+pwsh -NoProfile -File C:\GSADUs\Tools\ShellProfile\Test-RemoteCommand.ps1
+```
 
 ## Sync model
 

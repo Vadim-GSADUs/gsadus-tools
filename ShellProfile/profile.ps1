@@ -691,6 +691,332 @@ function end-day {
     rundll32.exe user32.dll,LockWorkStation
 }
 
+# -- remote: Moonlight / Sunshine streams between the two PCs ------------------
+# Each PC hosts Sunshine (a service, bound to its Tailscale IP) and carries a portable
+# Moonlight paired with the other PC's Sunshine (Vault wiki: remote-access -> Sunshine +
+# Moonlight). 'remote' prints what is live both ways, then a numbered menu of only the
+# actions that apply now. Each action is also a subcommand (they tab-complete):
+#
+#   remote status       what is live, both ways (no menu)
+#   remote connect      stream the other PC's Desktop (Moonlight, detached)
+#   remote disconnect   end this PC's stream: a clean 'quit', then close Moonlight here
+#   remote kick         end the other PC's stream into this PC: close its Moonlight over SSH
+#   remote restart      restart Sunshine here (one UAC prompt): ends any stream into this
+#                       PC without SSH
+#
+# A stream INTO a PC is read from that PC's sunshine.log (CLIENT CONNECTED / CLIENT
+# DISCONNECTED; Sunshine starts a fresh log at every service start). A stream FROM a PC
+# is its Moonlight process. One SSH call fetches the other PC's half. No credentials:
+# SSH is key auth, and Sunshine's web API (it needs the owner's web login) is never used.
+
+# One table, the same on both PCs: the other PC is the row that is not $env:COMPUTERNAME.
+# Moonlight = the name the OTHER PC's Moonlight paired this PC under. It is the host name
+# this PC's Sunshine reports, which keeps its Windows case (VG-Home), unlike COMPUTERNAME.
+$GSADUsStreamPCs = @(
+    @{ Name = 'VG-HOME';      Moonlight = 'VG-Home';      SshUser = 'User';  SshHost = 'vg-home' }
+    @{ Name = 'GSADUS-VADIM'; Moonlight = 'GSADUS-VADIM'; SshUser = 'Vadim'; SshHost = 'gsadus-vadim' }
+)
+$GSADUsMoonlightExe    = Join-Path $env:USERPROFILE 'Apps\Moonlight\Moonlight.exe'   # portable; setup.ps1 does not install it
+$GSADUsSunshineLog     = 'C:\Program Files\Sunshine\config\sunshine.log'
+$GSADUsSunshineService = 'SunshineService'
+
+function Get-StreamPeer {
+    param([string]$ComputerName = $env:COMPUTERNAME)
+    if (-not ($GSADUsStreamPCs | Where-Object { $_.Name -eq $ComputerName })) {
+        throw ("remote: {0} is not one of the stream PCs ({1})." -f $ComputerName, (($GSADUsStreamPCs | ForEach-Object { $_.Name }) -join ', '))
+    }
+    $GSADUsStreamPCs | Where-Object { $_.Name -ne $ComputerName } | Select-Object -First 1
+}
+
+function ConvertFrom-SunshineLog {
+    # Pure: sunshine.log lines and the service status -> is a client streaming this PC now?
+    param([string[]]$Lines = @(), [string]$Service = 'Running')
+    $state = [ordered]@{ Service = $Service; Started = $null; Live = $false; Since = $null; Ended = $null }
+    foreach ($line in $Lines) {
+        if ($line -notmatch '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[^\]]*\]: \w+: (CLIENT CONNECTED|CLIENT DISCONNECTED|Sunshine version)') { continue }
+        $at = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [cultureinfo]::InvariantCulture)
+        switch ($Matches[2]) {
+            'Sunshine version'    { $state.Started = $at; $state.Live = $false; $state.Since = $null; $state.Ended = $null }
+            'CLIENT CONNECTED'    { $state.Live = $true; $state.Since = $at }
+            'CLIENT DISCONNECTED' { $state.Live = $false; $state.Ended = $at }
+        }
+    }
+    # A stopped service streams nothing, whatever its log's last line says.
+    if ($Service -ne 'Running') { $state.Live = $false }
+    [pscustomobject]$state
+}
+
+function Get-SunshineStream {
+    # This PC's Sunshine, from its log and its service. Self-contained on purpose:
+    # Get-RemoteState ships it (with ConvertFrom-SunshineLog and the two variables) to
+    # the other PC over SSH.
+    param([string]$Log = $GSADUsSunshineLog, [string]$ServiceName = $GSADUsSunshineService)
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    $lines = @()
+    if (Test-Path -LiteralPath $Log) {
+        $lines = @(Select-String -LiteralPath $Log -Pattern 'CLIENT (DIS)?CONNECTED|Sunshine version' | ForEach-Object { $_.Line })
+    }
+    ConvertFrom-SunshineLog -Lines $lines -Service $(if ($service) { "$($service.Status)" } else { 'Missing' })
+}
+
+function Get-StreamMoonlight { @(Get-Process -Name Moonlight -ErrorAction SilentlyContinue) }
+
+function Test-RemoteAdmin {
+    ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Invoke-StreamPeer {
+    # Run a script on the other PC (pwsh over SSH, which lands elevated there) and return
+    # its stdout lines. It never hangs: BatchMode (no prompt), a short connect timeout,
+    # keepalives, and a hard deadline. The script travels base64-encoded, so neither
+    # side's shell parses its $ or parentheses (Vault wiki: remote-access).
+    param([Parameter(Mandatory)][string]$Script, [int]$TimeoutSec = 20)
+    $peer = Get-StreamPeer
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
+    $psi = [Diagnostics.ProcessStartInfo]::new('ssh')
+    foreach ($a in @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2',
+            "$($peer.SshUser)@$($peer.SshHost)", "pwsh -NoProfile -NonInteractive -EncodedCommand $encoded")) {
+        $psi.ArgumentList.Add($a)
+    }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    try { $p = [Diagnostics.Process]::Start($psi) }
+    catch { return [pscustomobject]@{ Ok = $false; Output = @(); Error = "ssh did not start: $($_.Exception.Message)" } }
+    $p.StandardInput.Close()
+    $stdout = $p.StandardOutput.ReadToEndAsync()
+    $stderr = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+        try { $p.Kill($true) } catch { }
+        return [pscustomobject]@{ Ok = $false; Output = @(); Error = "no answer within $TimeoutSec s" }
+    }
+    $p.WaitForExit()   # lets the async reads finish
+    # The far pwsh can add CLIXML noise to stderr; ssh's own errors are plain lines.
+    $err = @($stderr.Result -split '\r?\n' | Where-Object { $_ -and $_ -notmatch '^#< CLIXML|^<Objs ' })
+    [pscustomobject]@{
+        Ok     = $p.ExitCode -eq 0
+        Output = @($stdout.Result -split '\r?\n' | Where-Object { $_ })
+        Error  = if ($p.ExitCode -eq 0) { $null } elseif ($err) { $err[-1] } else { "ssh exit $($p.ExitCode)" }
+    }
+}
+
+function Get-RemoteState {
+    # Both halves: this PC from its own Moonlight and Sunshine, the other PC over one SSH call.
+    $peer = Get-StreamPeer
+    $probe = @(
+        '$ErrorActionPreference = ''SilentlyContinue''; $ProgressPreference = ''SilentlyContinue'''
+        ('$GSADUsSunshineLog = ''{0}''; $GSADUsSunshineService = ''{1}''' -f $GSADUsSunshineLog, $GSADUsSunshineService)
+        "function ConvertFrom-SunshineLog {${function:ConvertFrom-SunshineLog}}"
+        "function Get-SunshineStream {${function:Get-SunshineStream}}"
+        '[pscustomobject]@{ Moonlight = @(Get-Process -Name Moonlight | ForEach-Object { $_.StartTime }); Sunshine = Get-SunshineStream } | ConvertTo-Json -Compress -Depth 3'
+    ) -join "`n"
+    $reply = Invoke-StreamPeer -Script $probe
+    $remote = $null
+    if ($reply.Ok) {
+        $json = $reply.Output | Where-Object { $_.StartsWith('{') } | Select-Object -Last 1
+        if ($json) { try { $remote = $json | ConvertFrom-Json } catch { } }
+    }
+    [pscustomobject]@{
+        Here          = $env:COMPUTERNAME
+        Peer          = $peer
+        Moonlight     = @(Get-StreamMoonlight)   # this PC -> the peer (or Moonlight just open)
+        Incoming      = Get-SunshineStream       # the peer -> this PC
+        PeerReached   = [bool]$remote
+        PeerError     = if ($remote) { $null } elseif ($reply.Error) { $reply.Error } else { 'no readable answer' }
+        PeerMoonlight = if ($remote) { @($remote.Moonlight) } else { @() }
+        Outgoing      = if ($remote) { $remote.Sunshine } else { $null }   # the peer's Sunshine
+    }
+}
+
+function Format-StreamTime {
+    param($At)
+    if (-not $At) { return '?' }
+    $t = [datetime]$At
+    if ($t.Date -eq (Get-Date).Date) { $t.ToString('HH:mm') } else { $t.ToString('ddd d MMM HH:mm') }
+}
+
+function Get-RemoteStatusLines {
+    # The status as coloured lines, one per direction (pure, so the tests can read it).
+    param([Parameter(Mandatory)]$State)
+    $here = $State.Here; $peer = $State.Peer.Name; $out = $State.Outgoing; $in = $State.Incoming
+    $ended = { param($s) if ($s -and $s.Ended) { " (last ended $(Format-StreamTime $s.Ended))" } else { '' } }
+
+    $outLine = if ($State.Moonlight.Count -eq 0) {
+        if ($State.PeerReached -and $out.Live) { "none from here; $peer's Sunshine has another client since $(Format-StreamTime $out.Since)", 'Yellow' }
+        else { ('none' + (& $ended $out)), 'DarkGray' }
+    } elseif (-not $State.PeerReached) { 'Moonlight is open here (unconfirmed: no SSH)', 'Yellow' }
+    elseif ($out.Live) { "live since $(Format-StreamTime $out.Since)", 'Green' }
+    else { 'Moonlight is open here, not streaming', 'Yellow' }
+
+    $inLine = if ($in.Service -ne 'Running') { "none (Sunshine is $($in.Service.ToLower()) here)", 'Yellow' }
+    elseif (-not $in.Live) { ('none' + (& $ended $in)), 'DarkGray' }
+    elseif (-not $State.PeerReached -or $State.PeerMoonlight.Count -gt 0) { "live since $(Format-StreamTime $in.Since)", 'Green' }
+    else { "Sunshine still holds a session from $(Format-StreamTime $in.Since); $peer's Moonlight is closed", 'Yellow' }
+
+    $w = $here.Length + $peer.Length + 4
+    $lines = @(
+        [pscustomobject]@{ Text = ('    {0}  {1}' -f "$here -> $peer".PadRight($w), $outLine[0]); Color = $outLine[1] }
+        [pscustomobject]@{ Text = ('    {0}  {1}' -f "$peer -> $here".PadRight($w), $inLine[0]); Color = $inLine[1] }
+    )
+    if (-not $State.PeerReached) { $lines += [pscustomobject]@{ Text = "    ($peer over SSH: $($State.PeerError))"; Color = 'Yellow' } }
+    $lines
+}
+
+function Show-RemoteStatus {
+    param([Parameter(Mandatory)]$State)
+    Write-Host ("  remote: {0} (this PC) and {1}" -f $State.Here, $State.Peer.Name) -ForegroundColor Cyan
+    foreach ($l in Get-RemoteStatusLines $State) { Write-Host $l.Text -ForegroundColor $l.Color }
+}
+
+function Get-RemoteActions {
+    # The menu: only the actions that apply to this state. Ending a stream into this PC
+    # closes the peer's Moonlight over SSH; with SSH down (or no Moonlight there to close)
+    # the Sunshine restart is the fallback.
+    param([Parameter(Mandatory)]$State)
+    $peer = $State.Peer.Name
+    if ($State.Moonlight.Count -eq 0) {
+        [pscustomobject]@{ Key = 'connect'; Label = "Connect to $peer" }
+    } elseif ($State.PeerReached -and -not $State.Outgoing.Live) {
+        [pscustomobject]@{ Key = 'disconnect'; Label = 'Close Moonlight here (open, not streaming)' }
+    } else {
+        [pscustomobject]@{ Key = 'disconnect'; Label = "Disconnect my stream to $peer" }
+    }
+    if ($State.Incoming.Live) {
+        if ($State.PeerReached -and $State.PeerMoonlight.Count -gt 0) {
+            [pscustomobject]@{ Key = 'kick'; Label = "End $peer's stream into this PC (closes its Moonlight over SSH)" }
+        } else {
+            [pscustomobject]@{ Key = 'restart'; Label = 'End the stream into this PC: restart Sunshine here (UAC prompt)' }
+        }
+    }
+}
+
+function Read-RemoteYes {
+    param([string]$Prompt)
+    try { $ans = Read-Host "$Prompt [y/N]" } catch { return $false }   # non-interactive host
+    $ans -match '^[Yy]'
+}
+
+function Start-StreamMoonlight {
+    # Moonlight.exe imports AttachConsole: started from a terminal, it joins that console,
+    # prints its log there and closes with the window. Win32_Process.Create starts it the
+    # way Explorer does instead (no parent console, nothing waits on it). Returns its PID.
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    $line = (@($GSADUsMoonlightExe) + $Arguments | ForEach-Object { '"{0}"' -f $_ }) -join ' '
+    $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = $line; CurrentDirectory = (Split-Path -Parent $GSADUsMoonlightExe)
+    }
+    if ($r.ReturnValue -ne 0) { throw "Moonlight did not start (Win32_Process.Create returned $($r.ReturnValue))" }
+    $r.ProcessId
+}
+
+function Connect-RemoteStream {
+    $peer = Get-StreamPeer
+    if ($env:SSH_CONNECTION) {
+        # Over SSH it would start in session 0: a stream nobody sees, still blanking the
+        # peer's second monitor.
+        Write-Host "  skip (connect needs this PC's desktop; run it at $env:COMPUTERNAME, not over SSH)" -ForegroundColor Yellow
+        return
+    }
+    if (Get-StreamMoonlight) {
+        Write-Host "  skip (Moonlight is already open here; 'remote disconnect' closes it)" -ForegroundColor Yellow
+        return
+    }
+    if (-not (Test-Path -LiteralPath $GSADUsMoonlightExe)) {
+        Write-Host "  ERROR Moonlight not found at $GSADUsMoonlightExe (the portable copy; see Tools\ShellProfile\README.md)" -ForegroundColor Red
+        return
+    }
+    $null = Start-StreamMoonlight 'stream', $peer.Moonlight, 'Desktop'
+    Write-Host "  connect -> $($peer.Name) Desktop (Moonlight is starting; Ctrl+Alt+Shift+Q quits)" -ForegroundColor Cyan
+}
+
+function Disconnect-RemoteStream {
+    $peer = Get-StreamPeer
+    if (-not (Get-StreamMoonlight)) { Write-Host "  skip (no Moonlight running here)" -ForegroundColor DarkGray; return }
+    # 1. A clean quit: the peer's Sunshine ends the session now, not at its client
+    #    timeout. Skipped over SSH, where a new Moonlight has no desktop to run on.
+    $note = ''
+    if (-not $env:SSH_CONNECTION) {
+        Write-Host "  quit  asking $($peer.Name)'s Sunshine to end the session..." -ForegroundColor DarkGray
+        try {
+            $quit = Get-Process -Id (Start-StreamMoonlight 'quit', $peer.Moonlight) -ErrorAction SilentlyContinue
+            if ($quit -and -not $quit.WaitForExit(15000)) { $note = '; its quit did not finish in 15 s' }
+        } catch { $note = "; quit failed: $($_.Exception.Message)" }
+    }
+    # 2. Close whatever Moonlight is left: the streaming window stays open on its app list.
+    Get-StreamMoonlight | Stop-Process -Force -ErrorAction SilentlyContinue
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Get-StreamMoonlight) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    if (Get-StreamMoonlight) { Write-Host "  ERROR Moonlight is still running here; close it in Task Manager" -ForegroundColor Red; return }
+    Write-Host "  disconnect -> $($peer.Name) (Moonlight closed here$note)" -ForegroundColor Cyan
+}
+
+function Stop-RemoteIncoming {
+    $peer = Get-StreamPeer
+    if (-not (Get-SunshineStream).Live) { Write-Host "  skip (no stream into this PC, per Sunshine's log)" -ForegroundColor DarkGray; return }
+    # SSH can't drive the peer's desktop, so its Moonlight is closed outright.
+    $reply = Invoke-StreamPeer -Script '@(Get-Process -Name Moonlight -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru).Count'
+    if (-not $reply.Ok) {
+        Write-Host "  $($peer.Name) is unreachable over SSH ($($reply.Error))." -ForegroundColor Yellow
+        if (Read-RemoteYes '  Restart Sunshine here instead? (UAC prompt)') { Restart-RemoteSunshine }
+        return
+    }
+    Write-Host ("  kick  closed {0} Moonlight process(es) on {1}; waiting for Sunshine to drop the stream..." -f ($reply.Output | Select-Object -Last 1), $peer.Name) -ForegroundColor DarkGray
+    # Sunshine notices a vanished client at its ping timeout (about 10 s).
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-SunshineStream).Live -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+    if ((Get-SunshineStream).Live) { Write-Host "  WARN Sunshine still shows the stream; 'remote restart' ends it (UAC prompt)" -ForegroundColor Yellow }
+    else { Write-Host "  kick -> $($peer.Name)'s stream into this PC has ended" -ForegroundColor Cyan }
+}
+
+function Restart-RemoteSunshine {
+    # Ends any stream into this PC without SSH. The service needs admin: an elevated shell
+    # restarts it directly, any other asks once through UAC (no stored password).
+    $before = Get-SunshineStream
+    try {
+        if (Test-RemoteAdmin) { Restart-Service -Name $GSADUsSunshineService -Force -ErrorAction Stop }
+        else {
+            Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Verb RunAs -Wait -WindowStyle Hidden -ErrorAction Stop `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-Command', "Restart-Service -Name $GSADUsSunshineService -Force"
+        }
+    } catch {
+        Write-Host "  skip (Sunshine not restarted: $($_.Exception.Message))" -ForegroundColor Yellow   # UAC declined, or the service refused
+        return
+    }
+    # A restarted Sunshine runs with a fresh log, so its start time moves on.
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+        $after = Get-SunshineStream
+        $fresh = $after.Service -eq 'Running' -and $after.Started -and $after.Started -ne $before.Started
+        if (-not $fresh) { Start-Sleep -Milliseconds 500 }
+    } while (-not $fresh -and (Get-Date) -lt $deadline)
+    if ($fresh) { Write-Host "  restart -> Sunshine restarted on $env:COMPUTERNAME; no stream into this PC" -ForegroundColor Cyan }
+    else { Write-Host "  WARN Sunshine is $($after.Service.ToLower()) with no fresh start in its log; check services.msc ($GSADUsSunshineService)" -ForegroundColor Red }
+}
+
+function remote {
+    # Streams between the two PCs. No argument: the status, then a menu of the actions
+    # that apply now. Otherwise the named action.
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][ValidateSet('status', 'connect', 'disconnect', 'kick', 'restart')][string]$Action)
+    switch ($Action) {
+        'status'     { Show-RemoteStatus (Get-RemoteState); return }
+        'connect'    { Connect-RemoteStream; return }
+        'disconnect' { Disconnect-RemoteStream; return }
+        'kick'       { Stop-RemoteIncoming; return }
+        'restart'    { Restart-RemoteSunshine; return }
+    }
+    $state = Get-RemoteState
+    Show-RemoteStatus $state
+    $actions = @(Get-RemoteActions $state)
+    Write-Host ''
+    for ($i = 0; $i -lt $actions.Count; $i++) { Write-Host ('    {0}) {1}' -f ($i + 1), $actions[$i].Label) }
+    $range = if ($actions.Count -eq 1) { '1' } else { "1-$($actions.Count)" }
+    try { $choice = Read-Host "  Choose $range (Enter cancels)" } catch { return }   # non-interactive host
+    if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $actions.Count) {
+        remote $actions[[int]$choice - 1].Key
+    }
+}
+
 # -- secret (.env) rendering from Doppler --------------------------------------
 # .env files are gitignored (web-catalog has an external collaborator), so they
 # can't ride git like everything else. Since the 2026-08-25 cutover, Doppler is
