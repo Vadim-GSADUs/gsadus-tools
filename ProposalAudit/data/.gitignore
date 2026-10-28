@@ -1,2 +1,3 @@
-audit.db
-*.db
+# Local scans, logs and manifests only: they name client folders, so nothing here is committed.
+*
+!.gitignore

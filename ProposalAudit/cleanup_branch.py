@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-cleanup_branch.py -- remove dead folders from every proposal that has them.
+cleanup_branch.py -- remove or rename dead folders in every proposal that has them.
 
-Two modes:
+Four modes:
 
   WHOLE BRANCH (default) -- remove the branch itself, but only where it is
   completely empty. A branch holding even one file is skipped and reported.
@@ -15,6 +15,33 @@ Two modes:
 
     python cleanup_branch.py --branch "4 - Administrative & Change-Issues" --prune-empty
 
+  RENAME (--rename-to NAME) -- give the branch folder a new name, in the template and
+  every proposal, keeping its Drive ID. A branch holding a file is skipped, unless
+  --move-files-to DEST is given: then every file beneath it moves into the proposal's
+  DEST folder first, the emptied subfolders go, and the renamed folder starts empty.
+  --create-missing also makes the folder, under its new name, where neither name
+  exists. --undo LOG reverses a run from its log.
+
+    python cleanup_branch.py --branch "1 - Takeoff & Estimate" --rename-to "1 - CRM"
+    python cleanup_branch.py --branch "4 - Administrative & Change-Issues" \\
+        --rename-to "4 - Resources" --move-files-to "2 - Proposal - Contract"
+
+  FLATTEN (--flatten) -- keep the branch folder and drop every subfolder beneath it:
+  files in a subfolder move up into the branch folder first, keeping their Drive IDs.
+  A proposal where a lifted file would meet one of the same name is skipped. Logged
+  step by step like a rename, so --undo reverses it too.
+
+    python cleanup_branch.py --branch "3 - Supporting Documents/C - Received from Client" --flatten
+
+WHY RENAME RUNS ON THE MOUNT (owner, 2026-10-27): the rule that renames go through
+WebApp's renameFolder() protects the proposal folders' own names, which the engine's
+reconciler and collision probe read. Nothing reads the subfolder names this mode
+renames, and Drive for Desktop syncs a local rename as a rename of the same Drive
+item, so IDs, links and the engine's gsadus_template_item tags survive. os.rename
+refuses an existing target, the same kind of guarantee os.rmdir gives the removals.
+The result is verified through the Drive API after sync (scan_proposals.py --drive),
+ID by ID, not trusted from the mount.
+
 WHY PRUNE EXISTS: on 2026-09-10 the whole-branch mode removed "1 - Takeoff &
 Estimate" itself, and the owner wanted that folder kept as a placeholder. It had
 to be recovered by re-running the two child branches separately. Enumerating
@@ -26,11 +53,15 @@ protected because nothing needs to be: the six proposals with real estimate
 content (PP1, PP2, PP3, PP5, PP6, PP110) survived Tier 2 by the same rule that
 made Tier 1 safe -- not by a name I remembered to type.
 
-Executed so far (see README for the evidence behind each):
+Executed so far (README "What was changed"; the September evidence is in git history):
   2026-09-10  Tier 1  "1 - Takeoff & Estimate/3rd Party Coordination"  26,014 folders
   2026-09-10  Tier 2  "1 - Takeoff & Estimate"                          1,059 folders
   2026-09-10  fix     re-ran both children after the parent was restored 26,430 folders
   2026-09-10  Tier 3  "4 - Administrative & Change-Issues" --prune-empty
+  2026-10-27  Batch 1 --rename-to "1 - CRM" and "4 - Resources"           763 renames
+  2026-10-28  Batch 5 "3 - Supporting Documents/C - Received from Client" --flatten
+Kept for Batch 4 (retire "B - Questionnaire & Selection", held) and for --undo of the
+Batch 1 and Batch 5 logs in ~/.gsadus/proposal-folder-renames/.
 
 SAFETY -- three independent layers, deliberately redundant:
 
@@ -58,11 +89,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
 
 DEFAULT_ROOT = r"G:\Shared drives\GSADUs Business\1 - Proposals"
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+# Every log names proposal folders, i.e. client addresses: data/ is gitignored.
+RENAME_LOG = os.path.join(DATA, "folder_rename_log.jsonl")
+FLATTEN_LOG = os.path.join(DATA, "folder_flatten_log.jsonl")
+PP_RE = re.compile(r"^PP(\d+)\b")
 
 # Proposals this pass must not touch. PP358 was held out on 2026-09-10 while its
 # forked structure was under mint-bug investigation; that closed the same day and the
@@ -131,29 +168,321 @@ def remove_bottom_up(dirs):
     return removed, failures
 
 
+# --- rename mode ------------------------------------------------------------------
+
+def label(name):
+    """'PP221' for a proposal folder: the report never needs the street address."""
+    m = PP_RE.match(name)
+    return "PP" + m.group(1) if m else ("template" if "template" in name.lower() else name)
+
+
+def ranges(nums):
+    """[1,2,3,7] -> 'PP1-PP3, PP7'"""
+    out, nums = [], sorted(nums)
+    i = 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append("PP%d" % nums[i] if i == j else "PP%d-PP%d" % (nums[i], nums[j]))
+        i = j + 1
+    return ", ".join(out)
+
+
+def walk_branch(path):
+    """Every file and every subdirectory strictly beneath `path`, plus protected links."""
+    files, subdirs, protected = [], [], []
+    for dirpath, dirnames, filenames in os.walk(path):
+        subdirs.extend(os.path.join(dirpath, d) for d in dirnames)
+        for f in filenames:
+            files.append(os.path.join(dirpath, f))
+            if f.lower().startswith("0 - p") and f.lower().endswith(".lnk"):
+                protected.append(os.path.join(dirpath, f))
+    return files, subdirs, protected
+
+
+def plan_rename(base, branch, new_name, move_to, create_missing):
+    """What renaming `branch` to `new_name` means for one proposal folder. Reads only.
+
+    Returns (kind, detail, steps): kind is rename | create | already | absent | skip;
+    steps is the ordered list of (action, src, dst) to carry it out.
+    """
+    old = os.path.join(base, branch)
+    new = os.path.join(os.path.dirname(old), new_name)
+    has_old, has_new = os.path.isdir(old), os.path.isdir(new)
+    if has_old and has_new:
+        return "skip", "both names present", []
+    if not has_old:
+        if has_new:
+            return "already", "", []
+        if create_missing and os.path.isdir(os.path.dirname(new)):
+            return "create", "", [("mkdir", None, new)]
+        return "absent", "", []
+    files, subdirs, protected = walk_branch(old)
+    if protected:
+        return "skip", "holds %d protected project link(s)" % len(protected), []
+    steps = []
+    if files:
+        if not move_to:
+            return "skip", "holds %d file(s)" % len(files), []
+        dest = os.path.join(base, move_to)
+        if not os.path.isdir(dest):
+            return "skip", "no '%s' to move its files into" % move_to, []
+        targets = [os.path.join(dest, os.path.basename(f)) for f in files]
+        clash = [t for t in targets if os.path.exists(t)]
+        if clash or len(set(t.lower() for t in targets)) < len(targets):
+            return "skip", "a file of the same name is already in '%s'" % move_to, []
+        steps += [("move", f, t) for f, t in zip(files, targets)]
+    if subdirs and move_to:
+        steps += [("rmdir", d, None) for d in sorted(subdirs, key=lambda p: p.count(os.sep),
+                                                     reverse=True)]
+    steps.append(("rename", old, new))
+    detail = ("%d file(s) to '%s'" % (len(files), move_to)) if files else ""
+    if subdirs and not move_to:
+        detail = "carries %d empty subfolder(s)" % len(subdirs)
+    return "rename", detail, steps
+
+
+def run_steps(steps, name, log):
+    """Carry out one proposal's steps in order; stop at the first failure.
+
+    os.rename refuses an existing target and os.rmdir a non-empty directory, so a
+    stale plan fails loudly instead of overwriting or deleting anything."""
+    for action, src, dst in steps:
+        try:
+            if action == "move" or action == "rename":
+                if os.path.exists(dst):
+                    raise FileExistsError("target exists: " + dst)
+                os.rename(src, dst)
+            elif action == "rmdir":
+                os.rmdir(src)
+            elif action == "mkdir":
+                os.mkdir(dst)
+            ok, err = True, ""
+        except OSError as ex:
+            ok, err = False, str(ex)
+        log.write(json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "proposal": name, "action": action, "src": src, "dst": dst,
+            "ok": ok, "error": err}) + "\n")
+        log.flush()
+        if not ok:
+            return False, "%s failed: %s" % (action, err)
+    return True, ""
+
+
+def plan_flatten(base, branch):
+    """What flattening `branch` means for one proposal folder. Reads only.
+
+    Returns (kind, detail, steps) like plan_rename; kind is flatten | already | absent |
+    skip. Files already directly in the branch folder stay where they are.
+    """
+    root = os.path.join(base, branch)
+    if not os.path.isdir(root):
+        return "absent", "", []
+    files, subdirs, protected = walk_branch(root)
+    if protected:
+        return "skip", "holds %d protected project link(s)" % len(protected), []
+    if not subdirs:
+        return "already", "", []
+    lifted = [f for f in files if os.path.dirname(f) != root]
+    targets = [os.path.join(root, os.path.basename(f)) for f in lifted]
+    clash = [t for t in targets if os.path.exists(t)]
+    if clash or len(set(t.lower() for t in targets)) < len(targets):
+        return "skip", "a lifted file would meet one of the same name", []
+    steps = [("move", f, t) for f, t in zip(lifted, targets)]
+    steps += [("rmdir", d, None) for d in sorted(subdirs, key=lambda p: p.count(os.sep),
+                                                 reverse=True)]
+    return "flatten", ("%d file(s) up" % len(lifted)) if lifted else "", steps
+
+
+def rename_main(args, branch, names):
+    new_name = args.rename_to.strip()
+    if not new_name or os.sep in new_name or "/" in new_name:
+        print("ERROR: --rename-to takes a folder name, not a path", file=sys.stderr)
+        return 2
+    title = ["rename '%s'  ->  '%s'" % (branch, new_name)]
+    if args.move_files_to:
+        title.append("files beneath it move to '%s' first" % args.move_files_to)
+    labels = [("rename", "would rename", "renamed")]
+    if args.create_missing:
+        labels.append(("create", "would create", "created"))
+    labels += [("already", "already renamed", "already renamed"),
+               ("skip", "SKIPPED (kept as is)", "SKIPPED (kept as is)"),
+               ("absent", "neither name present", "neither name present")]
+    return steps_main(args, names, title, labels,
+                      lambda base: plan_rename(base, branch, new_name, args.move_files_to,
+                                               args.create_missing))
+
+
+def flatten_main(args, branch, names):
+    title = ["flatten '%s': files move up, subfolders go" % branch]
+    labels = [("flatten", "would flatten", "flattened"),
+              ("already", "no subfolders", "no subfolders"),
+              ("skip", "SKIPPED (kept as is)", "SKIPPED (kept as is)"),
+              ("absent", "branch absent", "branch absent")]
+    return steps_main(args, names, title, labels, lambda base: plan_flatten(base, branch))
+
+
+def steps_main(args, names, title, labels, plan):
+    """Run a step-planned mode (rename, flatten) over the template and every proposal.
+
+    `plan(base)` gives one proposal folder's (kind, detail, steps); `labels` lists each
+    kind's (kind, dry-run line, applied line) in report order."""
+    print("=" * 74)
+    for t in title:
+        print(t)
+    print("APPLY -- changing Drive" if args.apply else "DRY RUN -- nothing will change")
+    print("=" * 74)
+
+    # The template first: a mint during the pass then already gets the new shape.
+    names = sorted(names, key=lambda n: (PP_RE.match(n) is not None, n))
+    log = open(args.manifest, "a", encoding="utf-8") if args.apply else None
+    groups = {k: [] for k in [kind for kind, _, _ in labels] + ["failed"]}
+    notes = []
+    t0 = time.perf_counter()
+
+    def one_pass(batch):
+        for name in batch:
+            if name in EXCLUDE:
+                groups["skip"].append(name)
+                notes.append((name, "excluded"))
+                continue
+            try:
+                kind, detail, steps = plan(os.path.join(args.root, name))
+            except OSError as ex:
+                kind, detail, steps = "skip", "unreadable: %s" % str(ex)[:60], []
+            if args.apply and steps:
+                ok, err = run_steps(steps, name, log)
+                if not ok:
+                    kind, detail = "failed", err
+            groups[kind].append(name)
+            if detail or kind in ("skip", "failed") or not PP_RE.match(name):
+                notes.append((name, "%s%s" % (kind, ": " + detail if detail else "")))
+            if any(action == "move" for action, _, _ in steps):  # files move: step by step
+                for action, src, dst in steps:
+                    shown = os.path.relpath(src or dst, os.path.join(args.root, name))
+                    print("  %-10s %-6s %s%s" % (label(name), action, shown,
+                                                 "  ->  " + os.path.relpath(
+                                                     dst, os.path.join(args.root, name))
+                                                 if action in ("move", "rename") else ""))
+
+    one_pass(names)
+    if args.apply:
+        # A proposal minted while the pass ran is not in `names`: pick it up now.
+        with os.scandir(args.root) as it:
+            fresh = sorted(e.name for e in it if e.is_dir(follow_symlinks=False)
+                           and e.name not in set(names))
+        if fresh:
+            print("  minted during the pass: %s" % ", ".join(label(n) for n in fresh))
+            one_pass(fresh)
+        log.close()
+
+    def line(title, group):
+        """Proposals by PP number; anything else (the template) named after them."""
+        pp = [int(PP_RE.match(n).group(1)) for n in groups[group] if PP_RE.match(n)]
+        other = [label(n) for n in groups[group] if not PP_RE.match(n)]
+        print("%-24s %4d proposals  %s%s" % (title, len(pp), ranges(pp),
+                                             "  + " + ", ".join(other) if other else ""))
+
+    print("\n" + "-" * 74)
+    for name, note in notes:
+        print("  %-10s %s" % (label(name), note))
+    print("-" * 74)
+    for kind, dry, applied in labels:
+        line(applied if args.apply else dry, kind)
+    if args.apply:
+        line("FAILED", "failed")
+        print("log: %s" % args.manifest)
+    print("elapsed %.1fs" % (time.perf_counter() - t0))
+    if not args.apply:
+        print("\nDry run only. Re-run with --apply to execute.")
+    return 1 if groups["failed"] else 0
+
+
+def undo_main(args):
+    """Reverse a rename run from its log, newest step first. Dry run unless --apply.
+
+    A removed subfolder comes back as a NEW empty folder (new Drive ID); the original
+    sits in the shared drive's trash for 30 days if its identity matters."""
+    with open(args.undo, encoding="utf-8") as fh:
+        entries = [json.loads(line) for line in fh if line.strip()]
+    print("undo %d logged step(s) from %s -- %s"
+          % (len(entries), args.undo, "APPLY" if args.apply else "DRY RUN"))
+    bad = 0
+    for e in reversed([e for e in entries if e.get("ok")]):
+        act, src, dst = e["action"], e["src"], e["dst"]
+        if act in ("rename", "move"):
+            what, ready = ("rename back", os.path.exists(dst) and not os.path.exists(src))
+        elif act == "rmdir":
+            what, ready = ("recreate", not os.path.exists(src))
+        else:
+            what, ready = ("remove", os.path.isdir(dst) and not os.listdir(dst))
+        print("  %-11s %-10s %s%s" % (what, label(e["proposal"]),
+                                      os.path.relpath(dst or src, args.root),
+                                      "" if ready else "   !! state changed, skipped"))
+        if not ready:
+            bad += 1
+            continue
+        if args.apply:
+            if act in ("rename", "move"):
+                os.rename(dst, src)
+            elif act == "rmdir":
+                os.mkdir(src)
+            else:
+                os.rmdir(dst)
+    print("%d step(s) could not be undone as logged" % bad if bad else "all steps reversible")
+    return 1 if bad else 0
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--branch", required=True,
-                    help="branch to remove, relative to each proposal, e.g. "
+    ap.add_argument("--branch",
+                    help="branch to remove or rename, relative to each proposal, e.g. "
                          "'1 - Takeoff & Estimate'. Forward slashes are fine.")
     ap.add_argument("--prune-empty", action="store_true",
                     help="keep the branch folder itself and remove only the empty "
                          "directories beneath it")
+    ap.add_argument("--rename-to", default="",
+                    help="rename the branch folder to this name instead of removing it")
+    ap.add_argument("--move-files-to", default="",
+                    help="rename mode: first move every file beneath the branch into "
+                         "this folder of the same proposal, and drop the emptied subfolders")
+    ap.add_argument("--create-missing", action="store_true",
+                    help="rename mode: make the folder under its new name where neither "
+                         "name exists")
+    ap.add_argument("--flatten", action="store_true",
+                    help="keep the branch folder, lift every file beneath it into it, and "
+                         "drop its subfolders")
+    ap.add_argument("--undo", default="", help="reverse a rename or flatten run from its log")
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--apply", action="store_true",
-                    help="actually delete. Without this the script only reports.")
+                    help="actually change Drive. Without this the script only reports.")
     ap.add_argument("--limit", type=int, default=0, help="process only the first N")
     ap.add_argument("--only", default="", help="substring match on proposal name")
-    ap.add_argument("--manifest", default=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "data", "cleanup_manifest.jsonl"))
+    ap.add_argument("--manifest", default="",
+                    help="log file (default: data/cleanup_manifest.jsonl; rename mode "
+                         "data/folder_rename_log.jsonl)")
     args = ap.parse_args()
-
-    branch = args.branch.replace("/", os.sep).strip(os.sep)
 
     if not os.path.isdir(args.root):
         print("ERROR: root not reachable: " + args.root, file=sys.stderr)
         return 2
+    if args.undo:
+        return undo_main(args)
+    if not args.branch:
+        ap.error("--branch is required")
+    if (args.move_files_to or args.create_missing) and not args.rename_to:
+        ap.error("--move-files-to and --create-missing need --rename-to")
+    if sum(map(bool, (args.rename_to, args.prune_empty, args.flatten))) > 1:
+        ap.error("--rename-to, --prune-empty and --flatten are separate passes")
+    args.manifest = args.manifest or (RENAME_LOG if args.rename_to else
+                                      FLATTEN_LOG if args.flatten else
+                                      os.path.join(DATA, "cleanup_manifest.jsonl"))
+    os.makedirs(os.path.dirname(args.manifest), exist_ok=True)
+
+    branch = args.branch.replace("/", os.sep).strip(os.sep)
 
     with os.scandir(args.root) as it:
         names = sorted(e.name for e in it if e.is_dir(follow_symlinks=False))
@@ -161,6 +490,10 @@ def main():
         names = [n for n in names if args.only.lower() in n.lower()]
     if args.limit:
         names = names[:args.limit]
+    if args.rename_to:
+        return rename_main(args, branch, names)
+    if args.flatten:
+        return flatten_main(args, branch, names)
 
     mode = "APPLY -- deleting" if args.apply else "DRY RUN -- nothing will change"
     print("=" * 74)
@@ -168,7 +501,6 @@ def main():
     print(mode)
     print("=" * 74)
 
-    os.makedirs(os.path.dirname(args.manifest), exist_ok=True)
     log = open(args.manifest, "a", encoding="utf-8") if args.apply else None
 
     stats = {"targeted": 0, "absent": 0, "excluded": 0, "skipped_files": 0,

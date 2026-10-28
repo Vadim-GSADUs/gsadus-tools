@@ -18,13 +18,23 @@ CAUTION -- mtime here is NOT a usage signal. On a Drive mount it reflects sync a
 state, and the engine's mint writes fresh timestamps on every object it creates. Use it
 for forensics only. Real "was this ever touched by a human" lives in the Drive API
 (lastModifyingUser, viewedByMeTime) or the Drive Activity API. See README.md.
+
+--drive: the Drive API layer. Instead of walking the mount, list the same tree through
+the `gws` CLI (signed in as the owner) into the `drive_nodes` table: Drive IDs, md5,
+createdTime/modifiedTime, lastModifyingUser, the engine's `gsadus_template_item` tag,
+and shortcut targets -- everything the mount cannot show. It calls exactly two gws
+verbs, `drives list` and `files list`; both are reads. Folders are expanded a level at
+a time, 40 parents per query, so the cost is proportional to the tree, not the drive.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -66,9 +76,34 @@ CREATE INDEX IF NOT EXISTS idx_nodes_dir     ON nodes(is_dir, relpath);
 CREATE TABLE IF NOT EXISTS scan_errors (
     proposal TEXT, path TEXT, error TEXT
 );
+CREATE TABLE IF NOT EXISTS drive_nodes (
+    id            TEXT PRIMARY KEY, -- Drive ID; relpaths can repeat (Drive allows same-named siblings)
+    proposal      TEXT NOT NULL,
+    relpath       TEXT NOT NULL,    -- as in nodes: relative to the PROPOSAL root ('' = itself)
+    name          TEXT,
+    depth         INTEGER,
+    is_dir        INTEGER,
+    mime          TEXT,
+    size          INTEGER,          -- NULL for Google-native files
+    md5           TEXT,             -- NULL for Google-native files
+    created       TEXT,             -- Drive createdTime (ISO): when the object entered Drive
+    modified      TEXT,             -- Drive modifiedTime (ISO)
+    modifier      TEXT,             -- lastModifyingUser email (or display name)
+    template_item TEXT,             -- appProperties.gsadus_template_item: an engine copy
+    shortcut_to   TEXT,             -- shortcutDetails.targetId
+    scanned_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_drive_proposal ON drive_nodes(proposal, relpath);
+CREATE INDEX IF NOT EXISTS idx_drive_md5      ON drive_nodes(md5);
 """
 
 PP_RE = re.compile(r"^PP(\d+)\b")
+
+FOLDER_MIME = "application/vnd.google-apps.folder"
+DRIVE_FIELDS = ("nextPageToken,files(id,name,mimeType,parents,size,md5Checksum,createdTime,"
+                "modifiedTime,lastModifyingUser(emailAddress,displayName),appProperties,"
+                "shortcutDetails(targetId))")
+PARENTS_PER_QUERY = 40  # keeps the q string well under the GET URL limit
 
 
 def parse_pp(name):
@@ -148,6 +183,139 @@ def walk_proposal(root, proposal, subtree):
     return proposal, out, errors, time.perf_counter() - t0
 
 
+# --- Drive API layer (--drive) ------------------------------------------------------
+
+def gws_exe():
+    """The real gws binary. The npm shim is a .cmd, and cmd.exe mangles the JSON in
+    --params; the binary beside it takes argv as given. GWS_EXE overrides."""
+    if os.environ.get("GWS_EXE"):
+        return os.environ["GWS_EXE"]
+    shim = shutil.which("gws")
+    if shim:
+        exe = os.path.join(os.path.dirname(shim), "node_modules", "@googleworkspace",
+                           "cli", "bin", "gws.exe")
+        if os.path.isfile(exe):
+            return exe
+        return shim
+    raise SystemExit("ERROR: gws not found (npm i -g @googleworkspace/cli)")
+
+
+def gws_read(resource, params):
+    """One read-only gws list call, every page. Returns the items of all pages."""
+    cmd = [gws_exe(), "drive", resource, "list", "--params", json.dumps(params),
+           "--page-all", "--page-limit", "1000", "--page-delay", "0"]
+    for attempt in range(3):
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+        if p.returncode == 0:
+            break
+        time.sleep(2 * (attempt + 1))
+    else:
+        raise SystemExit("ERROR: gws failed (re-login? run: gws auth login)\n"
+                         + (p.stderr or p.stdout)[-800:])
+    key = "drives" if resource == "drives" else "files"
+    items = []
+    for line in p.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            items.extend(json.loads(line).get(key, []))
+    return items
+
+
+def qlit(value):
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def drive_children(drive_id, parent_ids, folders_only=False):
+    q = "(" + " or ".join("'%s' in parents" % qlit(p) for p in parent_ids) + ") and trashed=false"
+    if folders_only:
+        q += " and mimeType='%s'" % FOLDER_MIME
+    return gws_read("files", {
+        "corpora": "drive", "driveId": drive_id, "includeItemsFromAllDrives": True,
+        "supportsAllDrives": True, "pageSize": 1000, "q": q, "fields": DRIVE_FIELDS})
+
+
+def resolve_root(root):
+    """'G:\\Shared drives\\<drive>\\a\\b' -> (drive_id, folder_id), by name, read-only."""
+    parts = [s for s in re.split(r"[\\/]+", root) if s]
+    try:
+        i = [s.lower() for s in parts].index("shared drives")
+    except ValueError:
+        raise SystemExit("ERROR: --drive needs a root under 'Shared drives': " + root)
+    drive_name, segs = parts[i + 1], parts[i + 2:]
+    drives = gws_read("drives", {"pageSize": 100, "fields": "nextPageToken,drives(id,name)"})
+    match = [d["id"] for d in drives if d.get("name") == drive_name]
+    if len(match) != 1:
+        raise SystemExit("ERROR: shared drive %r not found (or ambiguous)" % drive_name)
+    drive_id = folder_id = match[0]
+    for seg in segs:
+        hits = [f for f in drive_children(drive_id, [folder_id], folders_only=True)
+                if f.get("name") == seg]
+        if len(hits) != 1:
+            raise SystemExit("ERROR: %d folders named %r under %s" % (len(hits), seg, folder_id))
+        folder_id = hits[0]["id"]
+    return drive_id, folder_id
+
+
+def drive_row(f, proposal, relpath, depth, stamp):
+    user = f.get("lastModifyingUser") or {}
+    return (f["id"], proposal, relpath, f.get("name", ""), depth,
+            1 if f.get("mimeType") == FOLDER_MIME else 0, f.get("mimeType", ""),
+            int(f["size"]) if f.get("size") is not None else None, f.get("md5Checksum"),
+            f.get("createdTime", ""), f.get("modifiedTime", ""),
+            user.get("emailAddress") or user.get("displayName") or "",
+            (f.get("appProperties") or {}).get("gsadus_template_item"),
+            (f.get("shortcutDetails") or {}).get("targetId"), stamp)
+
+
+def drive_scan(args, db):
+    drive_id, root_id = resolve_root(args.root)
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    top = [f for f in drive_children(drive_id, [root_id]) if f.get("mimeType") == FOLDER_MIME]
+    top.sort(key=lambda f: f.get("name", ""))
+    if args.only:
+        rx = re.compile(args.only)
+        top = [f for f in top if rx.search(f.get("name", ""))]
+    if args.limit:
+        top = top[:args.limit]
+    if not top:
+        print("nothing to scan")
+        return 0
+    print("drive scan: %d folders under %s x %d workers" % (len(top), args.root, args.workers),
+          flush=True)
+
+    t0 = time.perf_counter()
+    rows = [drive_row(f, f["name"], "", 0, stamp) for f in top]
+    where = {f["id"]: (f["name"], "") for f in top}  # folder id -> (proposal, relpath)
+    frontier, depth = [f["id"] for f in top], 0
+    while frontier:
+        depth += 1
+        batches = [frontier[i:i + PARENTS_PER_QUERY]
+                   for i in range(0, len(frontier), PARENTS_PER_QUERY)]
+        frontier = []
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            for fut in as_completed([pool.submit(drive_children, drive_id, b) for b in batches]):
+                for f in fut.result():
+                    proposal, prel = where[f["parents"][0]]
+                    rel = prel + "/" + f["name"] if prel else f["name"]
+                    rows.append(drive_row(f, proposal, rel, depth, stamp))
+                    if f.get("mimeType") == FOLDER_MIME:
+                        where[f["id"]] = (proposal, rel)
+                        frontier.append(f["id"])
+        print("  depth %d: %d rows so far" % (depth, len(rows)), flush=True)
+
+    # Same ghost-row rule as the mount walk: a re-scan replaces each folder's rows.
+    names = [f["name"] for f in top]
+    db.executemany("DELETE FROM drive_nodes WHERE proposal=?", [(n,) for n in names])
+    db.executemany("INSERT OR REPLACE INTO drive_nodes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   rows)
+    db.commit()
+    n_files = sum(1 for r in rows if not r[5])
+    print("\ndone in %.1fs -- %d folders, %d dirs, %d files recorded"
+          % (time.perf_counter() - t0, len(top), len(rows) - n_files, n_files))
+    print("db: " + args.db)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -162,7 +330,16 @@ def main():
     ap.add_argument("--only", default="", help="regex: scan only matching proposal names")
     ap.add_argument("--resume", action="store_true",
                     help="skip proposals already recorded at this scope")
+    ap.add_argument("--drive", action="store_true",
+                    help="list the root through the Drive API (gws, read-only) into "
+                         "drive_nodes instead of walking the mount")
     args = ap.parse_args()
+
+    if args.drive:
+        os.makedirs(os.path.dirname(args.db), exist_ok=True)
+        db = sqlite3.connect(args.db)
+        db.executescript(SCHEMA)
+        return drive_scan(args, db)
 
     if not os.path.isdir(args.root):
         print("ERROR: root not reachable: " + args.root, file=sys.stderr)
