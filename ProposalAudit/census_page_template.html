@@ -1,0 +1,198 @@
+<title>PP and P Folder Census</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a drawing sheet. Title block on top, then one band per theme:
+   proposal folders | theme and its proposed home | project folders. */
+:root {
+  --paper: #eef1ee;
+  --sheet: #ffffff;
+  --ink: #16232a;
+  --ink-2: #4d5c63;
+  --rule: #cfd7d3;
+  --accent: #1f5c8b;
+  --used: #2d7a4c;
+  --under: #a86d12;
+  --aband: #b0442b;
+  --never: #8a9499;
+  --tint: #e3ebf2;
+  --display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --body: "Barlow", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f161a; --sheet: #162027; --ink: #e4ebe8; --ink-2: #a2b0b4; --rule: #2a3940;
+    --accent: #79afd9; --used: #5cbd86; --under: #e0a94e; --aband: #e47e62; --never: #7d898f;
+    --tint: #1c2c37; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f161a; --sheet: #162027; --ink: #e4ebe8; --ink-2: #a2b0b4; --rule: #2a3940;
+  --accent: #79afd9; --used: #5cbd86; --under: #e0a94e; --aband: #e47e62; --never: #7d898f;
+  --tint: #1c2c37; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--paper); color: var(--ink); font: 15px/1.45 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 48px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 18px; }
+code { font: 0.86em var(--mono); }
+h1, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+
+/* title block */
+.titleblock {
+  display: grid; grid-template-columns: 2.2fr repeat(4, minmax(0, 1fr));
+  border: 1.5px solid var(--ink); background: var(--sheet);
+}
+.titleblock > div { padding: 10px 14px; border-left: 1px solid var(--rule); min-width: 0; }
+.titleblock > div:first-child { border-left: 0; }
+.tb-k { font: 600 11px/1.2 var(--display); letter-spacing: .09em; text-transform: uppercase; color: var(--ink-2); }
+.tb-v { font: 500 15px/1.3 var(--mono); font-variant-numeric: tabular-nums; margin-top: 4px; }
+h1 { font-size: 34px; font-weight: 700; line-height: 1; letter-spacing: .01em; }
+.titleblock .sub { color: var(--ink-2); font-size: 13px; margin-top: 6px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; font-size: 13px; color: var(--ink-2); }
+.legend .chip { margin-right: 6px; }
+.rule-note { font-size: 12.5px; color: var(--ink-2); max-width: 90ch; margin: 0; }
+
+.colheads, .theme {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 0.62fr) minmax(0, 1fr); gap: 0;
+}
+.colheads > div {
+  font: 600 12px/1 var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2);
+  padding: 0 14px 6px;
+}
+.colheads > div:nth-child(2) { text-align: center; }
+.theme { background: var(--sheet); border: 1px solid var(--rule); }
+.theme.open { box-shadow: inset 4px 0 0 var(--under); }
+.cell { padding: 12px 14px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.side-label { display: none; }
+.spine {
+  border-left: 1px solid var(--rule); border-right: 1px solid var(--rule); padding: 12px 14px;
+  background: var(--tint); display: grid; gap: 6px; align-content: start;
+}
+.spine h3 { font-size: 21px; font-weight: 700; }
+.spine p { margin: 0; font-size: 13px; color: var(--ink-2); }
+.home { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13.5px; }
+.home b { font-weight: 600; }
+.arrow {
+  font: 700 18px/1 var(--display); color: var(--accent); width: 22px; height: 22px;
+  display: inline-grid; place-items: center; border: 1.5px solid var(--accent); border-radius: 50%;
+}
+.state {
+  margin-left: auto; font: 600 11.5px/1 var(--mono); padding: 4px 7px; border-radius: 3px; white-space: nowrap;
+}
+.legend .state { margin: 0 6px 0 0; }
+.st-open { border: 1px dashed var(--under); color: var(--under); }
+.st-done { border: 1px solid var(--used); color: var(--used); }
+.st-settled { border: 1px solid var(--rule); color: var(--ink-2); }
+
+/* folder rows */
+.frow { display: grid; gap: 4px; padding-left: calc(var(--depth) * 14px); border-left: 3px solid var(--st); padding-block: 2px; }
+.frow { --st: var(--never); }
+.s-used { --st: var(--used); } .s-under { --st: var(--under); }
+.s-aband { --st: var(--aband); } .s-never { --st: var(--never); }
+.frow { margin-left: 0; }
+.fhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-left: 8px; }
+.fname { min-width: 0; overflow-wrap: anywhere; }
+.parent { color: var(--ink-2); font-size: 12px; margin-right: 4px; }
+.leaf { font-weight: 600; }
+.chip {
+  flex: none; font: 600 11px/1 var(--display); letter-spacing: .08em; text-transform: uppercase;
+  padding: 4px 7px 3px; border-radius: 3px; color: var(--sheet); background: var(--st);
+  display: inline-block;
+}
+.s-never .chip { background: transparent; color: var(--never); box-shadow: inset 0 0 0 1px var(--never); }
+.chip.ghost { background: transparent; color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--rule); }
+.legend .chip { --st: var(--used); }
+.meter { height: 5px; background: var(--rule); margin-left: 8px; border-radius: 3px; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--st); }
+.segbar { display: flex; height: 7px; margin-left: 8px; border-radius: 3px; overflow: hidden; gap: 2px; }
+.seg { display: block; background: var(--st); }
+.facts { font: 12.5px/1.35 var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-2); padding-left: 8px; }
+.facts b { color: var(--ink); font-weight: 500; }
+.tag {
+  justify-self: start; margin-left: 8px; font-size: 11.5px; padding: 1px 6px; border-radius: 3px;
+  background: var(--tint); color: var(--ink-2);
+}
+.frow > .tag + .tag { margin-top: -2px; }
+details { padding-left: 8px; font-size: 12.5px; }
+summary { cursor: pointer; color: var(--accent); width: max-content; }
+summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.samples, .divs { list-style: none; margin: 6px 0 2px; padding: 0; display: grid; gap: 3px; }
+.samples li { display: grid; grid-template-columns: 52px 86px minmax(0, 1fr) auto; gap: 8px; font: 12px/1.35 var(--mono); }
+.samples .num { color: var(--accent); }
+.samples .d { color: var(--ink-2); }
+.samples .f { overflow-wrap: anywhere; }
+.samples .w { color: var(--ink-2); font-size: 11px; }
+.divs li { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: 12.5px; }
+.divs .chip { justify-self: start; }
+.divs .dc { font: 12px var(--mono); color: var(--ink-2); }
+.fine { margin: 6px 0 0; color: var(--ink-2); font-size: 12px; }
+.note { margin: 0; font-size: 13px; color: var(--ink-2); padding-left: 11px; border-left: 3px dotted var(--rule); }
+
+.batches { background: var(--sheet); border: 1px solid var(--rule); padding: 14px 16px; }
+.batches h2 { font: 700 20px/1.1 var(--display); margin: 0 0 4px; }
+.batches p { margin: 0 0 10px; font-size: 13px; color: var(--ink-2); }
+.batches ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.batches li.ph { margin-top: 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-2); }
+.batches li { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; font-size: 14px; }
+.bn {
+  font: 500 12px/22px var(--mono); text-align: center; height: 22px; border-radius: 3px;
+  border: 1px dashed var(--accent); color: var(--accent);
+}
+
+@media (max-width: 900px) {
+  .titleblock { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .titleblock > div:first-child { grid-column: 1 / -1; border-bottom: 1px solid var(--rule); }
+  .titleblock > div:nth-child(2n) { border-left: 0; }
+  .titleblock > div:nth-child(n+2) { border-top: 1px solid var(--rule); }
+  .colheads { display: none; }
+  .theme { grid-template-columns: minmax(0, 1fr); }
+  .spine { order: -1; border: 0; border-bottom: 1px solid var(--rule); }
+  .cell + .cell { border-top: 1px solid var(--rule); }
+  .side-label {
+    display: block; font: 600 11px/1 var(--display); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .samples li { grid-template-columns: 48px 80px minmax(0, 1fr); }
+  .samples .w { grid-column: 3; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="titleblock">
+    <div>
+      <h1>PP and P Folder Census</h1>
+      <div class="sub">Today's proposal and project templates, folder by folder: where real files land, each theme's one home, and what is still to do.</div>
+    </div>
+    <div><div class="tb-k">Proposals</div><div class="tb-v">{{N_PP}} PP</div></div>
+    <div><div class="tb-k">Projects</div><div class="tb-v">{{N_P}} P</div></div>
+    <div><div class="tb-k">Themes still open</div><div class="tb-v">{{N_OPEN}}</div></div>
+    <div><div class="tb-k">Read from Drive</div><div class="tb-v">{{READ_ON}}</div></div>
+  </header>
+
+  <div class="legend">
+    <span class="s-used"><span class="chip">used</span>10%+ of last 12 months</span>
+    <span class="s-under"><span class="chip">underused</span>alive, under 10%</span>
+    <span class="s-aband"><span class="chip">abandoned</span>nothing new in 6 months</span>
+    <span class="s-never"><span class="chip">never used</span>no real file ever</span>
+  </div>
+  <p class="rule-note">A real file is not a shortcut, not OS litter, and not an untouched template copy (matched by the engine's tag, by content, or by the same bytes in 3+ folders). Dates come from Drive, with migration days corrected. Bars show the share of the {{R_PP}} PP and {{R_P}} P folders made in the last 12 months.</p>
+  <div class="legend states"><span><span class="state st-open">Open</span>something is still to do</span><span><span class="state st-done">Done</span>the decided change has landed</span><span><span class="state st-settled">Settled</span>nothing planned</span></div>
+
+  <div class="colheads" aria-hidden="true"><div>Proposal template · PP0</div><div>Theme · home · state</div><div>Project template · P0</div></div>
+  {{THEMES}}
+
+  <section class="batches">
+    <h2>What's left</h2>
+    <p>The same list as the ProposalAudit README's Open items. Each step still runs only after your go.</p>
+    <ol>{{BATCHES}}</ol>
+  </section>
+</div>

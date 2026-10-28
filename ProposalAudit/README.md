@@ -87,6 +87,26 @@ python cleanup_branch.py --undo <log> [--apply]               # reverse a rename
 `data/` is local only. Every scan, log and manifest there names client folders, so its
 `.gitignore` keeps all of it out of git.
 
+## The census page
+
+The owner's page, https://claude.ai/artifact/5BhsxKE1jxpoXDbgveP8d9, shows today's PP0 and
+P0 side by side. It gives each theme's home and state (open, done or settled) and a
+"What's left" list. Rebuild it after every batch, so rows for removed folders drop out:
+
+```bash
+python scan_proposals.py --drive --db data/census_pp.db
+python scan_proposals.py --drive --db data/census_p.db --root "G:/Shared drives/GSADUs Projects/2024 Projects"   # then 2025, 2026
+python analyze.py census --db data/census_pp.db --json data/census_pp.json
+python analyze.py census --db data/census_p.db --json data/census_p.json
+python census_page.py        # writes data/folder-census.html
+```
+
+Then publish `data/folder-census.html` over that same artifact URL, so the link keeps
+working.
+- The rows and counts come from the scan.
+- The themes, states and "What's left" in `census_page.py` are written by hand. Update
+  them, together with Open items above, whenever a batch lands or a decision changes.
+
 ## Rules
 
 - **The mtime trap.** On the G: mount, mtime is sync and cache state, not use. The Drive
