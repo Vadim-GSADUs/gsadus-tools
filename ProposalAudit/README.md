@@ -56,10 +56,9 @@ Waiting on the owner:
 Not waiting on the owner:
 
 9. **Pipedrive's 54 won deals against 63 PP↔P pairs.** This was never reconciled.
-10. **Notes for PM's P-folder housekeeping.** P0 belongs to the office, so these are not
-    this folder's job.
-    - P0's `C - Received from Client` still has its two subfolders.
-    - 13 projects file at the DIV level, leaving `1 - Material` and `2 - Labor` unused.
+10. **A note for PM's P-folder housekeeping.** P0 belongs to the office, so this is not
+    this folder's job: 13 projects file at the DIV level, leaving `1 - Material` and
+    `2 - Labor` unused.
 
 ## Use
 
@@ -130,6 +129,11 @@ working.
   P folders is PM's housekeeping.
 - **Verify through the Drive API after sync,** ID by ID, against a scan taken before.
   The mount is not evidence.
+- **Moving files and removing their folders take two runs.** Drive for Desktop can sync a
+  folder's removal before the moves out of it, and trash the files with the folder
+  (P30, 2026-10-28). So a run that moves files removes nothing. After the drive-wide
+  poll shows the moves have synced, the same command removes the emptied folders. A
+  file found trashed after a pass comes back from the trash by its ID.
 - **Nothing here deletes a file.** `os.rmdir` refuses a non-empty folder, which is the
   safety net for folder work. Any change that removes files needs quarantine tooling
   first: move rather than delete, hashes before and after, and a refusal on any
@@ -155,7 +159,7 @@ working.
 **On the P side**, PM's bridge adds two shortcuts: `0 - PP…` at the root, and
 `PP### Site Walkthrough` in `2 - Supporting Documents/A - Project (Images & Videos)`.
 Approved plans, permits, construction media, takeoffs, receipts and closeout papers live
-in the P.
+in the P. `C - Received from Client` has no subfolders on either side.
 
 ## What was changed
 
@@ -167,6 +171,7 @@ logs live in `~/.gsadus/proposal-folder-renames/`.
 | 2026-09-10 | Tiers 1–3: the empty DIV tree and dead placeholders removed from every PP | 33,584 → 4,692 folders, 0 files lost (mount-verified) | past the 30-day trash window |
 | 2026-10-27 | Batch 1: `1 - Takeoff & Estimate` → `1 - CRM`, `4 - Administrative & Change-Issues` → `4 - Resources` | 763 renamed in place, 9 created, PP221's 2 files moved to the contract folder; 41,610 files unchanged | `cleanup_branch.py --undo …/2026-10-27-batch1.jsonl` |
 | 2026-10-28 | Batch 5: `C - Received from Client` flattened | 779 subfolders gone, 40 files lifted with the same IDs | `cleanup_branch.py --undo …/2026-10-28-batch5-flatten.jsonl` |
+| 2026-10-28 | The same flatten on the P side: `2 - Supporting Documents/C - Received from Client` in P0 and P1–P64 (owner's ruling, recorded in PM `docs/discovery/project-folders.md` §10–11) | 132 subfolders gone (two per folder, plus P28's `Client Photos` and P30's `HOA Documents`), 28 files lifted with the same IDs. A sync race trashed 5 of P30's; the ID check caught it, and they were restored (see Rules) | `cleanup_branch.py --undo ~/.gsadus/pm-folder-housekeeping/2026-10-28-c-flatten.jsonl` |
 | 2026-10-28 | Batch 6: 5 approved plan files moved from PPs into their P, beside the P's own copies | IDs, parents and md5 checked | `…/2026-10-28-batch6-moves.jsonl`: each line has `file_id`, `from`, `to`; reverse it with `files.update` (`addParents` = from, `removeParents` = to) |
 | 2026-10-28 | Batch 3: the P → PP walkthrough shortcut, as PM's bridge's third leg | all 63 pairs, Vadim-GSADUs/gsadus-pm#1 | in PM |
 | 2026-10-28 | Batch 7: the nightly CRM history into each PP's `1 - CRM` | WebApp `23eb889f`; contract in `docs/proposals/CRM-HISTORY.md` | in WebApp |

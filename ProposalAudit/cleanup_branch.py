@@ -18,7 +18,8 @@ Four modes:
   RENAME (--rename-to NAME) -- give the branch folder a new name, in the template and
   every proposal, keeping its Drive ID. A branch holding a file is skipped, unless
   --move-files-to DEST is given: then every file beneath it moves into the proposal's
-  DEST folder first, the emptied subfolders go, and the renamed folder starts empty.
+  DEST folder, and a second run, once Drive has synced, drops the emptied subfolders
+  and renames the folder, which starts empty.
   --create-missing also makes the folder, under its new name, where neither name
   exists. --undo LOG reverses a run from its log.
 
@@ -27,7 +28,8 @@ Four modes:
         --rename-to "4 - Resources" --move-files-to "2 - Proposal - Contract"
 
   FLATTEN (--flatten) -- keep the branch folder and drop every subfolder beneath it:
-  files in a subfolder move up into the branch folder first, keeping their Drive IDs.
+  files in a subfolder move up into the branch folder, keeping their Drive IDs, and a
+  second run, once Drive has synced, drops the emptied subfolders.
   A proposal where a lifted file would meet one of the same name is skipped. Logged
   step by step like a rename, so --undo reverses it too.
 
@@ -41,6 +43,15 @@ item, so IDs, links and the engine's gsadus_template_item tags survive. os.renam
 refuses an existing target, the same kind of guarantee os.rmdir gives the removals.
 The result is verified through the Drive API after sync (scan_proposals.py --drive),
 ID by ID, not trusted from the mount.
+
+WHY TWO RUNS (2026-10-28): a run that moves files never also removes the folders they
+came from. On the P-side flatten, 5 of the 6 files lifted out of a nested folder (P30
+C/Documents/HOA Documents) reached their new folder in Drive and were then trashed with
+it: Drive for Desktop synced the folder removal before it had settled the moves. The
+ID-by-ID check after sync caught it, and the files came back from the trash. So when
+files must move, a run moves only them; once the drive-wide poll shows the moves synced,
+the same command again finds empty subfolders and removes them (and, in rename mode,
+renames). Always verify ID by ID after sync.
 
 WHY PRUNE EXISTS: on 2026-09-10 the whole-branch mode removed "1 - Takeoff &
 Estimate" itself, and the owner wanted that folder kept as a placeholder. It had
@@ -99,7 +110,7 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 # Every log names proposal folders, i.e. client addresses: data/ is gitignored.
 RENAME_LOG = os.path.join(DATA, "folder_rename_log.jsonl")
 FLATTEN_LOG = os.path.join(DATA, "folder_flatten_log.jsonl")
-PP_RE = re.compile(r"^PP(\d+)\b")
+NUM_RE = re.compile(r"^(PP|P)(\d+)\b")   # proposal PP221 or project P28
 
 # Proposals this pass must not touch. PP358 was held out on 2026-09-10 while its
 # forked structure was under mint-bug investigation; that closed the same day and the
@@ -171,21 +182,25 @@ def remove_bottom_up(dirs):
 # --- rename mode ------------------------------------------------------------------
 
 def label(name):
-    """'PP221' for a proposal folder: the report never needs the street address."""
-    m = PP_RE.match(name)
-    return "PP" + m.group(1) if m else ("template" if "template" in name.lower() else name)
+    """'PP221' or 'P28' for a proposal or project folder: the report never needs the
+    street address."""
+    m = NUM_RE.match(name)
+    return m.group(1) + m.group(2) if m else ("template" if "template" in name.lower() else name)
 
 
-def ranges(nums):
-    """[1,2,3,7] -> 'PP1-PP3, PP7'"""
-    out, nums = [], sorted(nums)
-    i = 0
-    while i < len(nums):
-        j = i
-        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
-            j += 1
-        out.append("PP%d" % nums[i] if i == j else "PP%d-PP%d" % (nums[i], nums[j]))
-        i = j + 1
+def ranges(names):
+    """['PP1 …', 'PP2 …', 'PP3 …', 'PP7 …'] -> 'PP1-PP3, PP7' (numbered folders only)"""
+    out = []
+    for prefix in ("PP", "P"):
+        nums = sorted(int(m.group(2)) for m in map(NUM_RE.match, names) if m and m.group(1) == prefix)
+        i = 0
+        while i < len(nums):
+            j = i
+            while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+                j += 1
+            out.append("%s%d" % (prefix, nums[i]) if i == j
+                       else "%s%d-%s%d" % (prefix, nums[i], prefix, nums[j]))
+            i = j + 1
     return ", ".join(out)
 
 
@@ -232,14 +247,14 @@ def plan_rename(base, branch, new_name, move_to, create_missing):
         clash = [t for t in targets if os.path.exists(t)]
         if clash or len(set(t.lower() for t in targets)) < len(targets):
             return "skip", "a file of the same name is already in '%s'" % move_to, []
-        steps += [("move", f, t) for f, t in zip(files, targets)]
+        # Moves only, this run: see WHY TWO RUNS.
+        return ("rename", "%d file(s) to '%s' first; run again once Drive has synced"
+                % (len(files), move_to), [("move", f, t) for f, t in zip(files, targets)])
     if subdirs and move_to:
         steps += [("rmdir", d, None) for d in sorted(subdirs, key=lambda p: p.count(os.sep),
                                                      reverse=True)]
     steps.append(("rename", old, new))
-    detail = ("%d file(s) to '%s'" % (len(files), move_to)) if files else ""
-    if subdirs and not move_to:
-        detail = "carries %d empty subfolder(s)" % len(subdirs)
+    detail = "carries %d empty subfolder(s)" % len(subdirs) if subdirs and not move_to else ""
     return "rename", detail, steps
 
 
@@ -290,10 +305,11 @@ def plan_flatten(base, branch):
     clash = [t for t in targets if os.path.exists(t)]
     if clash or len(set(t.lower() for t in targets)) < len(targets):
         return "skip", "a lifted file would meet one of the same name", []
-    steps = [("move", f, t) for f, t in zip(lifted, targets)]
-    steps += [("rmdir", d, None) for d in sorted(subdirs, key=lambda p: p.count(os.sep),
-                                                 reverse=True)]
-    return "flatten", ("%d file(s) up" % len(lifted)) if lifted else "", steps
+    if lifted:  # moves only, this run: see WHY TWO RUNS
+        return ("flatten", "%d file(s) up first; run again once Drive has synced" % len(lifted),
+                [("move", f, t) for f, t in zip(lifted, targets)])
+    return "flatten", "", [("rmdir", d, None) for d in sorted(subdirs, key=lambda p: p.count(os.sep),
+                                                              reverse=True)]
 
 
 def rename_main(args, branch, names):
@@ -336,7 +352,7 @@ def steps_main(args, names, title, labels, plan):
     print("=" * 74)
 
     # The template first: a mint during the pass then already gets the new shape.
-    names = sorted(names, key=lambda n: (PP_RE.match(n) is not None, n))
+    names = sorted(names, key=lambda n: (NUM_RE.match(n) is not None, n))
     log = open(args.manifest, "a", encoding="utf-8") if args.apply else None
     groups = {k: [] for k in [kind for kind, _, _ in labels] + ["failed"]}
     notes = []
@@ -357,7 +373,7 @@ def steps_main(args, names, title, labels, plan):
                 if not ok:
                     kind, detail = "failed", err
             groups[kind].append(name)
-            if detail or kind in ("skip", "failed") or not PP_RE.match(name):
+            if detail or kind in ("skip", "failed") or not NUM_RE.match(name):
                 notes.append((name, "%s%s" % (kind, ": " + detail if detail else "")))
             if any(action == "move" for action, _, _ in steps):  # files move: step by step
                 for action, src, dst in steps:
@@ -379,11 +395,11 @@ def steps_main(args, names, title, labels, plan):
         log.close()
 
     def line(title, group):
-        """Proposals by PP number; anything else (the template) named after them."""
-        pp = [int(PP_RE.match(n).group(1)) for n in groups[group] if PP_RE.match(n)]
-        other = [label(n) for n in groups[group] if not PP_RE.match(n)]
-        print("%-24s %4d proposals  %s%s" % (title, len(pp), ranges(pp),
-                                             "  + " + ", ".join(other) if other else ""))
+        """Folders by PP/P number; anything else (the PP template) named after them."""
+        numbered = [n for n in groups[group] if NUM_RE.match(n)]
+        other = [label(n) for n in groups[group] if not NUM_RE.match(n)]
+        print("%-24s %4d folders  %s%s" % (title, len(numbered), ranges(numbered),
+                                           "  + " + ", ".join(other) if other else ""))
 
     print("\n" + "-" * 74)
     for name, note in notes:
