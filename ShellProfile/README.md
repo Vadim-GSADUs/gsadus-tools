@@ -31,8 +31,8 @@ never needs editing again.
 | Command | Action |
 |---|---|
 | `wip` / `unwip` | Save / pick up working state for the current repo. |
-| `wip-all` / `unwip-all` | Same across every GSADUs repo. |
-| `end-day` | `wip-all` then lock the screen. |
+| `wip-all` / `unwip-all` | Same across every GSADUs repo. The shared Vault is read-only: `wip` skips it, `unwip` only fast-forwards it. |
+| `end-day` | `wip-all` then lock the screen (the light vault scan is paused for the Vault split until batch 6). |
 | `Register-StartupUnwip` / `Unregister-StartupUnwip` | Add/remove the at-logon `unwip-all` scheduled task. |
 | `pull-env` | Render every repo's env file from Doppler (values never echoed). |
 | `pull-env -RepoPath .` | Refresh only this registered checkout's env, including linked worktrees. |
@@ -75,7 +75,7 @@ How it decides:
 
 Moonlight is the portable copy at `%USERPROFILE%\Apps\Moonlight\Moonlight.exe` on each PC, and
 Sunshine is a service on each. `setup.ps1` installs neither; their setup and settings are in
-the Vault (`wiki/curated/remote-access.md` → Sunshine + Moonlight). `remote` starts Moonlight
+the private Vault (`Vault\private\wiki\curated\remote-access.md` → Sunshine + Moonlight). `remote` starts Moonlight
 from the user folder: Moonlight goes portable when `portable.dat` is in its *working*
 directory, and the `Moonlight.ini` beside the exe holds an unpaired identity. The pairings are
 in the per-user registry settings, which ordinary launches use.

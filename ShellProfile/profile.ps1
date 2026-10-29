@@ -49,6 +49,20 @@ $GSADUsRetiredRepos = @(
 # origin owner is not on this list is a third-party fork and stays out of wip/unwip.
 $GSADUsRepoOwners = @('Vadim-GSADUs', 'gsadus')
 
+# Repos this workspace reads but never writes. The shared Vault (gsadus/gsadus-vault) has one
+# writer, its maintainer agent (Vault split, owner 2026-10-28): wip never snapshots or pushes
+# it, unwip only fast-forwards it. The owner's private Vault nested inside it (Vault\private)
+# syncs like any other repo. Paths relative to $GSADUsRoot.
+$GSADUsReadOnlyRepos = @('Vault')
+
+function Test-WipReadOnly {
+    # True when the current directory's repo is one of $GSADUsReadOnlyRepos.
+    $top = git rev-parse --show-toplevel 2>$null
+    if (-not $top) { return $false }
+    $here = $top -replace '/', '\'
+    [bool]($GSADUsReadOnlyRepos | Where-Object { (Join-Path $GSADUsRoot $_) -eq $here })
+}
+
 function Get-WipRepos {
     # Only include repos whose origin OWNER is one of $GSADUsRepoOwners.
     $retired = $GSADUsRetiredRepos | ForEach-Object { Join-Path $GSADUsRoot $_ }
@@ -312,6 +326,7 @@ function Save-RepoWip {
     $me     = Get-WipHost
     $branch = git rev-parse --abbrev-ref HEAD 2>$null
     if (-not $branch) { Write-Host "  skip $Label (not a git repo)" -ForegroundColor DarkGray; return }
+    if (Test-WipReadOnly) { Write-Host "  skip $Label (read-only: its maintainer is the only writer)" -ForegroundColor DarkGray; return }
 
     git fetch -q --prune origin 2>$null
 
@@ -679,9 +694,12 @@ function end-day {
     Write-Host "Saving work across all repos..." -ForegroundColor Cyan
     wip-all
     # Light vault scan runs headless in the background (survives the screen lock)
-    # and pushes its own vault commit — see Vault\scripts\wiki-scan.ps1.
-    $scan = "$GSADUsRoot\Vault\scripts\wiki-scan.ps1"
-    if ((Test-Path $scan) -and $env:GSADUS_ENDDAY_SCAN -ne '0') {
+    # and pushes its own vault commit — see Vault\private\scripts\wiki-scan.ps1.
+    $scan = "$GSADUsRoot\Vault\private\scripts\wiki-scan.ps1"
+    if ($GSADUsVaultScanPaused) {
+        Write-Host ""
+        Write-Host "Vault scan paused for the Vault split (batch 6 resumes it)." -ForegroundColor DarkGray
+    } elseif ((Test-Path $scan) -and $env:GSADUS_ENDDAY_SCAN -ne '0') {
         Write-Host ""
         Write-Host "Launching background vault scan (light, today's repos only)..." -ForegroundColor Cyan
         Start-Process pwsh -ArgumentList '-NoProfile','-File',$scan,'-Light' -WindowStyle Hidden
@@ -693,7 +711,7 @@ function end-day {
 
 # -- remote: Moonlight / Sunshine streams between the two PCs ------------------
 # Each PC hosts Sunshine (a service, bound to its Tailscale IP) and carries a portable
-# Moonlight paired with the other PC's Sunshine (Vault wiki: remote-access -> Sunshine +
+# Moonlight paired with the other PC's Sunshine (private Vault wiki: remote-access -> Sunshine +
 # Moonlight). 'remote' prints what is live both ways, then a numbered menu of only the
 # actions that apply now. Each action is also a subcommand (they tab-complete):
 #
@@ -773,7 +791,7 @@ function Invoke-StreamPeer {
     # Run a script on the other PC (pwsh over SSH, which lands elevated there) and return
     # its stdout lines. It never hangs: BatchMode (no prompt), a short connect timeout,
     # keepalives, and a hard deadline. The script travels base64-encoded, so neither
-    # side's shell parses its $ or parentheses (Vault wiki: remote-access).
+    # side's shell parses its $ or parentheses (private Vault wiki: remote-access).
     # ssh's stdio are temp files, not pipes: run without a console (inside an SSH session,
     # as agents run 'remote'), Windows OpenSSH 9.5's client never exits once its output is
     # a pipe, though the far side has sent everything (traced 2026-10-21, on both PCs).
@@ -1421,15 +1439,23 @@ function Unregister-StartupUnwip {
 # -- vault wiki-agent scan (Phase 2, activated 2026-07-10) ---------------------
 # Deep scan weekly via scheduled task; light scan rides end-day. Register the
 # weekly task on ONE machine only — the scan pushes vault main when done.
+# Paused for the Vault split (owner 2026-10-28): the launcher, now in the private Vault,
+# still assumes one Vault repo. Batch 6 points it at the shared and private repos, then
+# sets this back to $false.
+$GSADUsVaultScanPaused = $true
 
 function vault-scan {
     param([switch]$Light, [switch]$DryRun)
-    & "$GSADUsRoot\Vault\scripts\wiki-scan.ps1" -Light:$Light -DryRun:$DryRun
+    if ($GSADUsVaultScanPaused) {
+        Write-Host "vault-scan is paused for the Vault split until batch 6 rewires wiki-scan.ps1." -ForegroundColor Yellow
+        return
+    }
+    & "$GSADUsRoot\Vault\private\scripts\wiki-scan.ps1" -Light:$Light -DryRun:$DryRun
 }
 
 function Register-WikiScan {
     $action   = New-ScheduledTaskAction -Execute "pwsh" `
-        -Argument "-NoProfile -File `"$GSADUsRoot\Vault\scripts\wiki-scan.ps1`"" `
+        -Argument "-NoProfile -File `"$GSADUsRoot\Vault\private\scripts\wiki-scan.ps1`"" `
         -WorkingDirectory $GSADUsRoot
     $trigger  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 18:00
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 45) `
