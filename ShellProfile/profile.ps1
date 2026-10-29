@@ -698,7 +698,7 @@ function end-day {
     $scan = "$GSADUsRoot\Vault\private\scripts\wiki-scan.ps1"
     if ($GSADUsVaultScanPaused) {
         Write-Host ""
-        Write-Host "Vault scan paused for the Vault split (batch 6 resumes it)." -ForegroundColor DarkGray
+        Write-Host "Vault scan paused (`$GSADUsVaultScanPaused in profile.ps1)." -ForegroundColor DarkGray
     } elseif ((Test-Path $scan) -and $env:GSADUS_ENDDAY_SCAN -ne '0') {
         Write-Host ""
         Write-Host "Launching background vault scan (light, today's repos only)..." -ForegroundColor Cyan
@@ -1437,17 +1437,16 @@ function Unregister-StartupUnwip {
 }
 
 # -- vault wiki-agent scan (Phase 2, activated 2026-07-10) ---------------------
-# Deep scan weekly via scheduled task; light scan rides end-day. Register the
-# weekly task on ONE machine only — the scan pushes vault main when done.
-# Paused for the Vault split (owner 2026-10-28): the launcher, now in the private Vault,
-# still assumes one Vault repo. Batch 6 points it at the shared and private repos, then
-# sets this back to $false.
-$GSADUsVaultScanPaused = $true
+# Deep scan daily via scheduled task; light scan rides end-day. The scan writes both
+# Vaults (the shared one only through the leak check) and pushes them when done, so
+# register the daily task on ONE machine only. Set $GSADUsVaultScanPaused = $true to
+# stop vault-scan and end-day's scan (it was, for the Vault split, 2026-10-28 → 10-29).
+$GSADUsVaultScanPaused = $false
 
 function vault-scan {
     param([switch]$Light, [switch]$DryRun)
     if ($GSADUsVaultScanPaused) {
-        Write-Host "vault-scan is paused for the Vault split until batch 6 rewires wiki-scan.ps1." -ForegroundColor Yellow
+        Write-Host "vault-scan is paused (`$GSADUsVaultScanPaused in profile.ps1)." -ForegroundColor Yellow
         return
     }
     & "$GSADUsRoot\Vault\private\scripts\wiki-scan.ps1" -Light:$Light -DryRun:$DryRun
@@ -1457,15 +1456,15 @@ function Register-WikiScan {
     $action   = New-ScheduledTaskAction -Execute "pwsh" `
         -Argument "-NoProfile -File `"$GSADUsRoot\Vault\private\scripts\wiki-scan.ps1`"" `
         -WorkingDirectory $GSADUsRoot
-    $trigger  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 18:00
+    $trigger  = New-ScheduledTaskTrigger -Daily -At 18:00
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 45) `
         -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
     Register-ScheduledTask -TaskName "GSADUs-wiki-scan" -Action $action `
         -Trigger $trigger -Settings $settings -Force | Out-Null
-    Write-Host "Weekly vault wiki-scan registered (Sundays 18:00; register on one machine only)." -ForegroundColor Green
+    Write-Host "Daily vault wiki-scan registered (18:00; register on one machine only)." -ForegroundColor Green
 }
 
 function Unregister-WikiScan {
     Unregister-ScheduledTask -TaskName "GSADUs-wiki-scan" -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Host "Weekly vault wiki-scan removed." -ForegroundColor Yellow
+    Write-Host "Daily vault wiki-scan removed." -ForegroundColor Yellow
 }

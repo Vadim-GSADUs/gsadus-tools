@@ -32,7 +32,7 @@ never needs editing again.
 |---|---|
 | `wip` / `unwip` | Save / pick up working state for the current repo. |
 | `wip-all` / `unwip-all` | Same across every GSADUs repo. The shared Vault is read-only: `wip` skips it, `unwip` only fast-forwards it. |
-| `end-day` | `wip-all` then lock the screen (the light vault scan is paused for the Vault split until batch 6). |
+| `end-day` | `wip-all`, a background light vault scan (`GSADUS_ENDDAY_SCAN=0` skips it), then lock the screen. |
 | `Register-StartupUnwip` / `Unregister-StartupUnwip` | Add/remove the at-logon `unwip-all` scheduled task. |
 | `pull-env` | Render every repo's env file from Doppler (values never echoed). |
 | `pull-env -RepoPath .` | Refresh only this registered checkout's env, including linked worktrees. |
