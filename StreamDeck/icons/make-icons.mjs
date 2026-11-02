@@ -11,49 +11,35 @@ const { Resvg } = createRequire(join(deps, "package.json"))("@resvg/resvg-js");
 const tablerDir = join(deps, "node_modules", "@tabler", "icons", "icons", "outline");
 const outDir = dirname(fileURLToPath(import.meta.url));
 
-const ink = { dev: "#5DCAA5", revit: "#F0997B", office: "#AFA9EC", nav: "#B4B2A9" };
+// Ink by what the key does: opens a page or folder, runs a command, stops something.
+const ink = { open: "#AFA9EC", run: "#5DCAA5", stop: "#F0997B" };
 
-// [file, page, tabler icon, label]
+// [file, kind, tabler icon, label]
 const keys = [
-  ["dev-webapp", "dev", "world", "WebApp 3009"],
-  ["dev-site", "dev", "home", "Site 3019"],
-  ["dev-pm", "dev", "calendar-event", "PM 3200"],
-  ["dev-claude", "dev", "sparkles", "Claude"],
-  ["dev-docker", "dev", "brand-docker", "Docker"],
-  ["dev-unwip", "dev", "cloud-download", "unwip-all"],
-  ["dev-wip", "dev", "cloud-upload", "wip-all"],
-  ["dev-vercel", "dev", "triangle", "Vercel"],
-  ["dev-supabase", "dev", "database", "Supabase"],
-  ["revit-open", "revit", "building", "Revit 2026"],
-  ["revit-vg", "revit", "eye", "VG"],
-  ["revit-thin", "revit", "line-dashed", "Thin lines"],
-  ["revit-hide", "revit", "eye-off", "Hide EH"],
-  ["revit-isolate", "revit", "focus-2", "Isolate HI"],
-  ["revit-reset", "revit", "refresh", "Reset HR"],
-  ["revit-3d", "revit", "box", "Default 3D"],
-  ["revit-tile", "revit", "layout-grid", "Tile WT"],
-  ["revit-pyrevit", "revit", "reload", "pyRevit RL"],
-  ["revit-projects", "revit", "folder", "Projects"],
-  ["office-mute", "office", "microphone-off", "Meet mute"],
-  ["office-camera", "office", "video-off", "Meet camera"],
-  ["office-meet", "office", "video", "Open Meet"],
-  ["office-pipedrive", "office", "filter", "Pipedrive"],
-  ["office-pm", "office", "calendar-event", "PM live"],
-  ["office-projects", "office", "folder", "Projects"],
-  ["office-business", "office", "folders", "Business"],
-  ["nav-dev", "nav", "code", "Dev"],
-  ["nav-revit", "nav", "building", "Revit"],
-  ["nav-office", "nav", "briefcase", "Office"],
+  ["gmail", "open", "mail", "Gmail"],
+  ["chat", "open", "messages", "Chat"],
+  ["pm", "open", "calendar-event", "PM"],
+  ["webapp", "open", "world", "WebApp"],
+  ["site", "open", "home", "gsadus.com"],
+  ["pipedrive", "open", "filter", "Pipedrive"],
+  ["proposals", "open", "file-dollar", "Proposals"],
+  ["projects", "open", "folder", "Projects"],
+  ["helpdesk", "open", "lifebuoy", "Helpdesk"],
+  ["board", "open", "layout-kanban", "Board"],
+  ["orchestrator", "open", "sparkles", "Orchestrator"],
+  ["gws-login", "run", "brand-google", "gws-login"],
+  ["gcloud-login", "run", "cloud-lock", "gcloud login"],
+  ["remote", "run", "device-desktop", "remote"],
+  ["stop-servers", "stop", "player-stop", "Stop servers"],
 ];
 
-for (const [file, page, icon, label] of keys) {
+for (const [file, kind, icon, label] of keys) {
   const src = readFileSync(join(tablerDir, `${icon}.svg`), "utf8");
   const body = src.replace(/^[\s\S]*?<svg[^>]*>/, "").replace(/<\/svg>\s*$/, "");
-  const bg = page === "nav" ? "#2C2C2A" : "#1A1A19";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
-  <rect width="144" height="144" fill="${bg}"/>
-  <g transform="translate(42 22) scale(2.5)" fill="none" stroke="${ink[page]}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${body}</g>
-  <text x="72" y="122" text-anchor="middle" font-family="Segoe UI" font-weight="600" font-size="19" fill="#F1EFE8">${label}${page === "nav" ? " ›" : ""}</text>
+  <rect width="144" height="144" fill="#1A1A19"/>
+  <g transform="translate(42 22) scale(2.5)" fill="none" stroke="${ink[kind]}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${body}</g>
+  <text x="72" y="122" text-anchor="middle" font-family="Segoe UI" font-weight="600" font-size="19" fill="#F1EFE8">${label}</text>
 </svg>`;
   const png = new Resvg(svg, { font: { loadSystemFonts: true, defaultFontFamily: "Segoe UI" } }).render().asPng();
   writeFileSync(join(outDir, `${file}.png`), png);
