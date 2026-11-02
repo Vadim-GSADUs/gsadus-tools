@@ -33,6 +33,7 @@ const keys = [
   ["revit-3d", "revit", "box", "Default 3D"],
   ["revit-tile", "revit", "layout-grid", "Tile WT"],
   ["revit-pyrevit", "revit", "reload", "pyRevit RL"],
+  ["revit-projects", "revit", "folder", "Projects"],
   ["office-mute", "office", "microphone-off", "Meet mute"],
   ["office-camera", "office", "video-off", "Meet camera"],
   ["office-meet", "office", "video", "Open Meet"],
