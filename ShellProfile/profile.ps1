@@ -1394,7 +1394,17 @@ function gws-login {
     if ($ListScopes) { return $scopes }
     $cache = Join-Path $HOME '.config\gws\token_cache.json'
     if (Test-Path $cache) { Remove-Item $cache -Force }   # stale access token = 403s
-    & gws auth login --scopes ($scopes -join ',')
+    # gws 0.22 only prints its sign-in link (to stderr) and never opens a browser, despite its
+    # help text. Open the link as it arrives; over SSH there is no desktop, so just print it.
+    $opened = $false
+    & gws auth login --scopes ($scopes -join ',') 2>&1 | ForEach-Object {
+        $line = "$_"
+        Write-Host $line
+        if (-not $opened -and -not $env:SSH_CONNECTION -and $line -match '^\s*(https://accounts\.google\.com/\S+)') {
+            Start-Process $Matches[1]; $opened = $true
+            Write-Host '(opened in your browser)' -ForegroundColor DarkGray
+        }
+    }
     if ($LASTEXITCODE -ne 0) { throw "gws auth login failed (exit $LASTEXITCODE)" }
     $tier = if ($Unrestricted) { ' (UNRESTRICTED tier included)' } else { '' }
     Write-Host ("gws-login: requested {0} scopes{1}. Verify: gws auth status" -f $scopes.Count, $tier)
