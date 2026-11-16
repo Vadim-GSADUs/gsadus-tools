@@ -1467,6 +1467,10 @@ function Register-WikiScan {
         -Argument "-NoProfile -File `"$GSADUsRoot\Vault\private\scripts\wiki-scan.ps1`"" `
         -WorkingDirectory $GSADUsRoot
     $trigger  = New-ScheduledTaskTrigger -Daily -At 18:00
+    # -At stores the start with today's UTC offset, which pins the task to that offset: after
+    # the clocks changed on 2026-11-01 it ran at 17:00. A start without an offset follows the
+    # wall clock.
+    $trigger.StartBoundary = (Get-Date -Hour 18 -Minute 0 -Second 0).ToString('yyyy-MM-ddTHH:mm:ss')
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 45) `
         -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
     Register-ScheduledTask -TaskName "GSADUs-wiki-scan" -Action $action `
