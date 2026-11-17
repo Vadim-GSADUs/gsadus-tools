@@ -7,8 +7,8 @@ install (`node C:/GSADUs/.claude/hooks/vercel-deploy/install.mjs --apply`, per m
 dry test: [the hook's README](../../.claude/hooks/vercel-deploy/README.md). The manual form
 below stays for other harnesses and previews.
 
-For both harnesses, after an **authorized** Git push, run from the checkout that
-was pushed (including a worktree):
+Where the hook does not cover the push (another harness, or a preview), after an
+**authorized** Git push, run from the checkout that was pushed (including a worktree):
 
 ```powershell
 $deployCommit = git rev-parse HEAD
@@ -53,9 +53,10 @@ is intentional, rerun the command to select it. `vercel inspect --wait` itself e
 ERROR and CANCELED while still printing the deployment, so the waiter reads that end state
 rather than treating the exit as a CLI failure.
 
-Agents should launch this as a yielding foreground process, retain its process ID,
-and consume completion promptly (short tool waits, at most 10 seconds when idle).
-Do useful independent work while it runs. Do not add a fixed 60–120 second sleep,
+Run the waiter so that the harness reports its completion, and do independent work
+while it runs: a background command in Claude Code, a yielding foreground process
+with short waits in Codex. Do not block on it or poll it on a timer. Do not add a
+fixed 60–120 second sleep,
 wait for GitHub Actions to infer Vercel readiness, or keep checking build logs after
 READY. CI checks and application smoke tests are separate gates: READY is Vercel's
 deployment status, not proof that tests passed or that a production alias points to
