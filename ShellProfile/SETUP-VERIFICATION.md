@@ -11,8 +11,8 @@ deployment, live database mutation, or production role change was performed.
 - Codex's saved desktop permission selection is `full-access`, matching this task's
   effective unrestricted local access. Its config also contains an unelevated Windows
   sandbox setting for sandboxed modes, but that setting is not the cause of this failure.
-- Claude's inspected global/workspace/repo settings contain read/npm command permissions
-  and Agent Mail hooks, but no automatic Doppler or dependency setup for worktrees.
+- Claude's inspected global/workspace/repo settings contain read/npm command permissions,
+  but no automatic Doppler or dependency setup for worktrees.
   Claude commonly works inside `C:\GSADUs` or `.claude/worktrees`; Codex's app creates
   worktrees under the user profile. Neither location inherits ignored files from Git.
 - The old `pull-env` always targeted the four main checkouts. The missing seam was

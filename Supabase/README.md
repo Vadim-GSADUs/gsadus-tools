@@ -53,6 +53,9 @@ Owner decision, 2026-09-29: the task runs once a day, on **this PC only** (gsadu
 - **Where the result goes:** its output is appended to `.state\check.log`.
 - **How to read it:** `LastTaskResult` 2 means it was over the limit. The log's last block says
   which statements grew.
+- **How it reaches the owner:** the board's session-start note (`C:\GSADUs\.claude\hooks\board\board.mjs`)
+  reads the log and adds a line when the last check was over the limit, or when the check has not
+  run for three days. This check is the workspace's one egress guard (`C:\GSADUs\AGENTS.md` rule 8).
 - **Why daily:** each run is the next one's 24 h baseline.
 
 ## How bytes are estimated
